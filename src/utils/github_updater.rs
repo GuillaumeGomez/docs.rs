@@ -92,7 +92,7 @@ impl GithubUpdater {
             "SELECT releases.id, crates.name, releases.version, releases.repository_url
              FROM releases
              INNER JOIN crates ON (crates.id = releases.crate_id)
-             WHERE github_repo IS NULL AND repository_url LIKE '%github.com%';",
+             WHERE repository IS NULL AND repository_url LIKE '%github.com%';",
             &[],
         )?;
 
@@ -107,7 +107,7 @@ impl GithubUpdater {
                 debug!("{} {} points to a known missing repo", name, version);
             } else if let Some(node_id) = self.load_repository(&mut conn, &url)? {
                 conn.execute(
-                    "UPDATE releases SET github_repo = $1 WHERE id = $2;",
+                    "UPDATE releases SET repository = $1 WHERE id = $2;",
                     &[&node_id, &id],
                 )?;
                 info!("backfilled GitHub repository for {} {}", name, version);
@@ -120,7 +120,7 @@ impl GithubUpdater {
         Ok(())
     }
 
-    pub(crate) fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<String>> {
+    pub(crate) fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
         let name = match RepositoryName::from_url(url) {
             Some(name) => name,
             None => return Ok(None),
@@ -128,7 +128,7 @@ impl GithubUpdater {
 
         // Avoid querying the GitHub API for repositories we already loaded.
         if let Some(row) = conn.query_opt(
-            "SELECT id FROM github_repos WHERE name = $1 LIMIT 1;",
+            "SELECT id FROM repositories WHERE name = $1 AND host = 'github' LIMIT 1;",
             &[&format!("{}/{}", name.owner, name.repo)],
         )? {
             return Ok(Some(row.get("id")));
@@ -143,8 +143,7 @@ impl GithubUpdater {
             }),
         )?;
         if let Some(repo) = response.data.repository {
-            self.store_repository(conn, &repo)?;
-            Ok(Some(repo.id))
+            Ok(Some(self.store_repository(conn, &repo)?))
         } else if let Some(error) = response.errors.get(0) {
             use GraphErrorPath::*;
             match (error.error_type.as_str(), error.path.as_slice()) {
@@ -163,7 +162,9 @@ impl GithubUpdater {
         let mut conn = self.pool.get()?;
         let needs_update = conn
             .query(
-                "SELECT id FROM github_repos WHERE updated_at < NOW() - INTERVAL '1 day';",
+                "SELECT host_id
+                 FROM repositories
+                 WHERE host = 'github' AND updated_at < NOW() - INTERVAL '1 day';",
                 &[],
             )?
             .into_iter()
@@ -245,16 +246,16 @@ impl GithubUpdater {
             .json()?)
     }
 
-    fn store_repository(&self, conn: &mut Client, repo: &GraphRepository) -> Result<()> {
+    fn store_repository(&self, conn: &mut Client, repo: &GraphRepository) -> Result<i32> {
         trace!(
             "storing GitHub repository stats for {}",
             repo.name_with_owner
         );
-        conn.execute(
-            "INSERT INTO github_repos (
-                 id, name, description, last_commit, stars, forks, issues, updated_at
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-             ON CONFLICT (id) DO
+        let rows = conn.query(
+            "INSERT INTO repositories (
+                 host, host_id, name, description, last_commit, stars, forks, issues, updated_at
+             ) VALUES ('github', $1, $2, $3, $4, $5, $6, $7, NOW())
+             ON CONFLICT (host, host_id) DO
              UPDATE SET
                  name = $2,
                  description = $3,
@@ -262,7 +263,8 @@ impl GithubUpdater {
                  stars = $5,
                  forks = $6,
                  issues = $7,
-                 updated_at = NOW();",
+                 updated_at = NOW()
+             RETURNING id;",
             &[
                 &repo.id,
                 &repo.name_with_owner,
@@ -273,12 +275,18 @@ impl GithubUpdater {
                 &(repo.issues.total_count as i32),
             ],
         )?;
-        Ok(())
+        Ok(rows[0].get(0))
     }
 
-    fn delete_repository(&self, conn: &mut Client, id: &str) -> Result<()> {
-        trace!("removing GitHub repository stats for ID {}", id);
-        conn.execute("DELETE FROM github_repos WHERE id = $1;", &[&id])?;
+    fn delete_repository(&self, conn: &mut Client, host_id: &str) -> Result<()> {
+        trace!(
+            "removing GitHub repository stats for host ID `{}` and host `github`",
+            host_id
+        );
+        conn.execute(
+            "DELETE FROM repositories WHERE host = 'github' AND host_id = $1;",
+            &[&host_id],
+        )?;
         Ok(())
     }
 }

@@ -191,7 +191,10 @@ docker-compose run -- database add-directory <DIRECTORY> [PREFIX]
 # You need to set CRATESFYI_GITHUB_USERNAME, CRATESFYI_GITHUB_ACCESSTOKEN
 # environment variables in order to run this command.
 # You can set this environment variables in ~/.cratesfyi.env file.
-docker-compose run -- database update-github-fields
+cargo run -- database update-github-fields
+# Updates github stats for crates.
+# You need to set CRATESFYI_GITLAB_ACCESSTOKEN environment variable.
+cargo run -- database update-gitlab-fields
 ```
 
 If you want to explore or edit database manually, you can connect to the database

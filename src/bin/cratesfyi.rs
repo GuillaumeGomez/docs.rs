@@ -377,6 +377,12 @@ enum DatabaseSubcommand {
     /// Backfill GitHub stats for crates.
     BackfillGithubStats,
 
+    /// Updates gitlab stats for crates.
+    UpdateGitlabFields,
+
+    /// Backfill Gitlab stats for crates.
+    BackfillGitlabStats,
+
     /// Updates info for a crate from the registry's API
     UpdateCrateRegistryFields {
         #[structopt(name = "CRATE")]
@@ -430,6 +436,18 @@ impl DatabaseSubcommand {
             Self::BackfillGithubStats => {
                 docs_rs::utils::GithubUpdater::new(ctx.config()?, ctx.pool()?)?
                     .ok_or_else(|| failure::format_err!("missing GitHub token"))?
+                    .backfill_repositories()?;
+            }
+
+            Self::UpdateGitlabFields => {
+                docs_rs::utils::GitlabUpdater::new(ctx.config()?, ctx.pool()?)?
+                    .ok_or_else(|| failure::format_err!("missing Gitlab token"))?
+                    .update_all_crates()?;
+            }
+
+            Self::BackfillGitlabStats => {
+                docs_rs::utils::GitlabUpdater::new(ctx.config()?, ctx.pool()?)?
+                    .ok_or_else(|| failure::format_err!("missing Gitlab token"))?
                     .backfill_repositories()?;
             }
 

@@ -618,6 +618,88 @@ pub fn migrate(version: Option<Version>, conn: &mut Client) -> CratesfyiResult<(
             DROP INDEX github_repos_stars_idx;
             ",
         ),
+        migration!(
+            context,
+            27,
+            // description
+            "Add gitlab handling: creation of the new repositories table which replaces and extend \
+             github_repos",
+            // upgrade query
+            "
+                CREATE TABLE repositories (
+                    id SERIAL PRIMARY KEY,
+                    host VARCHAR NOT NULL,
+                    host_id VARCHAR NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    last_commit TIMESTAMPTZ,
+                    stars INT NOT NULL,
+                    forks INT NOT NULL,
+                    issues INT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    UNIQUE (host, host_id)
+                );
+
+                ALTER TABLE releases ADD COLUMN repository INTEGER
+                    REFERENCES repositories(id) ON DELETE SET NULL;
+
+                INSERT INTO repositories(host, host_id, name, description, last_commit, stars, forks, issues, updated_at)
+                    SELECT 'github', id, name, description, last_commit, stars, forks, issues, updated_at
+                    FROM github_repos;
+
+                UPDATE releases
+                    SET repository = repositories.id
+                FROM repositories
+                WHERE releases.github_repo IS NOT NULL AND repositories.host_id = releases.github_repo;
+
+                DROP INDEX releases_github_repo_idx;
+                DROP INDEX github_repos_stars_idx;
+
+                CREATE INDEX releases_github_repo_idx ON releases(repository);
+                CREATE INDEX github_repos_stars_idx ON repositories(stars DESC);
+
+                ALTER TABLE releases
+                    DROP COLUMN github_repo;
+
+                DROP TABLE github_repos;
+            ",
+            // downgrade query
+            "
+                CREATE TABLE github_repos (
+                    id VARCHAR PRIMARY KEY NOT NULL,
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    last_commit TIMESTAMPTZ,
+                    stars INT NOT NULL,
+                    forks INT NOT NULL,
+                    issues INT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL
+                );
+
+                ALTER TABLE releases ADD COLUMN github_repo VARCHAR
+                    REFERENCES github_repos(id) ON DELETE SET NULL;
+
+                INSERT INTO github_repos(id, name, description, last_commit, stars, forks, issues, updated_at)
+                    SELECT host_id, name, description, last_commit, stars, forks, issues, updated_at
+                    FROM repositories WHERE repositories.host = 'github';
+
+                UPDATE releases
+                    SET github_repo = repositories.host_id
+                FROM repositories
+                WHERE repositories.host_id = releases.github_repo AND releases.repository IS NOT NULL AND repositories.host = 'github';
+
+                DROP INDEX releases_github_repo_idx;
+                DROP INDEX github_repos_stars_idx;
+
+                CREATE INDEX releases_github_repo_idx ON releases (github_repo);
+                CREATE INDEX github_repos_stars_idx ON github_repos(stars DESC);
+
+                ALTER TABLE releases
+                    DROP COLUMN repository;
+
+                DROP TABLE repository;
+            "
+        ),
     ];
 
     for migration in migrations {

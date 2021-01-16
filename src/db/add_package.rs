@@ -37,7 +37,7 @@ pub(crate) fn add_package_into_database(
     has_docs: bool,
     has_examples: bool,
     compression_algorithms: std::collections::HashSet<CompressionAlgorithm>,
-    github_repo: Option<String>,
+    repository_id: Option<i32>,
 ) -> Result<i32> {
     debug!("Adding package into database");
     let crate_id = initialize_package_in_database(conn, metadata_pkg)?;
@@ -55,7 +55,8 @@ pub(crate) fn add_package_into_database(
             homepage_url, description, description_long, readme,
             authors, keywords, have_examples, downloads, files,
             doc_targets, is_library, doc_rustc_version,
-            documentation_url, default_target, features, github_repo
+            documentation_url, default_target, features,
+            repository
          )
          VALUES (
             $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,
@@ -87,7 +88,7 @@ pub(crate) fn add_package_into_database(
                 documentation_url = $24,
                 default_target = $25,
                 features = $26,
-                github_repo = $27
+                repository = $27
          RETURNING id",
         &[
             &crate_id,
@@ -116,7 +117,7 @@ pub(crate) fn add_package_into_database(
             &metadata_pkg.documentation,
             &default_target,
             &features,
-            &github_repo,
+            &repository_id,
         ],
     )?;
 

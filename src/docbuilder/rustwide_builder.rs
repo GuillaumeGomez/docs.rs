@@ -7,7 +7,9 @@ use crate::docbuilder::{crates::crates_from_path, Limits};
 use crate::error::Result;
 use crate::index::api::ReleaseData;
 use crate::storage::CompressionAlgorithms;
-use crate::utils::{copy_doc_dir, parse_rustc_version, CargoMetadata, GithubUpdater};
+use crate::utils::{
+    copy_doc_dir, parse_rustc_version, CargoMetadata, GithubUpdater, GitlabUpdater,
+};
 use crate::{db::blacklist::is_blacklisted, utils::MetadataPackage};
 use crate::{Config, Context, Index, Metrics, Storage};
 use docsrs_metadata::{Metadata, DEFAULT_TARGETS, HOST_TARGET};
@@ -415,7 +417,10 @@ impl RustwideBuilder {
                 };
 
                 let cargo_metadata = res.cargo_metadata.root();
-                let github_repo = self.get_github_repo(&mut conn, cargo_metadata)?;
+                let repository = match self.get_github_repo(&mut conn, cargo_metadata)? {
+                    Some(r) => Some(r),
+                    None => self.get_gitlab_repo(&mut conn, cargo_metadata)?,
+                };
 
                 let release_id = add_package_into_database(
                     &mut conn,
@@ -429,7 +434,7 @@ impl RustwideBuilder {
                     has_docs,
                     has_examples,
                     algs,
-                    github_repo,
+                    repository,
                 )?;
 
                 if let Some(doc_coverage) = res.doc_coverage {
@@ -701,7 +706,7 @@ impl RustwideBuilder {
         &self,
         conn: &mut Client,
         metadata: &MetadataPackage,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<i32>> {
         let updater = match GithubUpdater::new(self.config.clone(), self.db.clone())? {
             Some(updater) => updater,
             None => {
@@ -720,6 +725,34 @@ impl RustwideBuilder {
             Ok(repo) => Ok(repo),
             Err(err) => {
                 warn!("failed to collect GitHub stats: {}", err);
+                Ok(None)
+            }
+        }
+    }
+
+    fn get_gitlab_repo(
+        &self,
+        conn: &mut Client,
+        metadata: &MetadataPackage,
+    ) -> Result<Option<i32>> {
+        let updater = match GitlabUpdater::new(self.config.clone(), self.db.clone())? {
+            Some(updater) => updater,
+            None => {
+                warn!("did not collect Gitlab stats as no token was provided");
+                return Ok(None);
+            }
+        };
+        let repo = match &metadata.repository {
+            Some(url) => url,
+            None => {
+                debug!("did not collect Gitlab stats as no repository URL was present");
+                return Ok(None);
+            }
+        };
+        match updater.load_repository(conn, repo) {
+            Ok(repo) => Ok(repo),
+            Err(err) => {
+                warn!("failed to collect Gitlab stats: {}", err);
                 Ok(None)
             }
         }
