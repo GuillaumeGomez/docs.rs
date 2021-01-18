@@ -219,6 +219,10 @@ impl Updater for GitlabUpdater {
             None => None,
         }
     }
+
+    fn name() -> &'static str {
+        "Gitlab"
+    }
 }
 
 impl GitlabUpdater {

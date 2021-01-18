@@ -7,9 +7,7 @@ use crate::docbuilder::{crates::crates_from_path, Limits};
 use crate::error::Result;
 use crate::index::api::ReleaseData;
 use crate::storage::CompressionAlgorithms;
-use crate::utils::{
-    copy_doc_dir, parse_rustc_version, CargoMetadata, GithubUpdater, GitlabUpdater, Updater,
-};
+use crate::utils::{copy_doc_dir, parse_rustc_version, CargoMetadata, RepositoryStatsUpdater};
 use crate::{db::blacklist::is_blacklisted, utils::MetadataPackage};
 use crate::{Config, Context, Index, Metrics, Storage};
 use docsrs_metadata::{Metadata, DEFAULT_TARGETS, HOST_TARGET};
@@ -700,46 +698,12 @@ impl RustwideBuilder {
     }
 
     fn get_repo(&self, conn: &mut Client, metadata: &MetadataPackage) -> Result<Option<i32>> {
-        macro_rules! return_if_ok_some {
-            ($typ:ty) => {
-                let data = self.get_repo_inner::<$typ>(conn, metadata);
-                if matches!(data, Ok(Some(_))) {
-                    return data;
-                }
-            };
-        }
-
-        // The `GitlabUpdated is a bit more permissive so better to put it at the end.
-        return_if_ok_some!(GithubUpdater);
-        return_if_ok_some!(GitlabUpdater);
-        Ok(None)
-    }
-
-    fn get_repo_inner<T: Updater>(
-        &self,
-        conn: &mut Client,
-        metadata: &MetadataPackage,
-    ) -> Result<Option<i32>> {
-        let updater = match T::new(self.config.clone(), self.db.clone())? {
-            Some(updater) => updater,
-            None => {
-                return Ok(None);
-            }
-        };
-        let repo = match &metadata.repository {
-            Some(url) => url,
-            None => {
-                debug!("did not collect GitHub stats as no repository URL was present");
-                return Ok(None);
-            }
-        };
-        match updater.load_repository(conn, repo) {
-            Ok(repo) => Ok(repo),
-            Err(err) => {
-                warn!("failed to collect GitHub stats: {}", err);
-                Ok(None)
-            }
-        }
+        RepositoryStatsUpdater::load_repository(
+            conn,
+            metadata,
+            self.config.clone(),
+            self.db.clone(),
+        )
     }
 }
 

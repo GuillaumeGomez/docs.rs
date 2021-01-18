@@ -3,7 +3,7 @@
 //! This daemon will start web server, track new packages and build them
 
 use crate::{
-    utils::{queue_builder, GithubUpdater, GitlabUpdater, Updater},
+    utils::{queue_builder, RepositoryStatsUpdater},
     Context, DocBuilder, RustwideBuilder,
 };
 use failure::Error;
@@ -77,29 +77,7 @@ pub fn start_daemon(context: &dyn Context, enable_registry_watcher: bool) -> Res
         })
         .unwrap();
 
-    if let Some(github_updater) = GithubUpdater::new(config.clone(), context.pool()?)? {
-        cron(
-            "github stats updater",
-            Duration::from_secs(60 * 60),
-            move || {
-                github_updater.update_all_crates()?;
-                Ok(())
-            },
-        )?;
-    } else {
-        log::warn!("GitHub stats updater not started as no token was provided");
-    }
-
-    if let Some(gitlab_updater) = GitlabUpdater::new(config, context.pool()?)? {
-        cron(
-            "gitlab stats updater",
-            Duration::from_secs(60 * 60),
-            move || {
-                gitlab_updater.update_all_crates()?;
-                Ok(())
-            },
-        )?;
-    }
+    RepositoryStatsUpdater::start_crons(config, context)?;
 
     // Never returns; `server` blocks indefinitely when dropped
     // NOTE: if a failure occurred earlier in `start_daemon`, the server will _not_ be joined -
@@ -109,7 +87,7 @@ pub fn start_daemon(context: &dyn Context, enable_registry_watcher: bool) -> Res
         .map_err(|_| failure::err_msg("web server panicked"))
 }
 
-fn cron<F>(name: &'static str, interval: Duration, exec: F) -> Result<(), Error>
+pub(crate) fn cron<F>(name: &'static str, interval: Duration, exec: F) -> Result<(), Error>
 where
     F: Fn() -> Result<(), Error> + Send + 'static,
 {

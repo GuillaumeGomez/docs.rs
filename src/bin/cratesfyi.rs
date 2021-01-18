@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use docs_rs::db::{self, add_path_into_database, Pool, PoolClient};
-use docs_rs::utils::{remove_crate_priority, set_crate_priority, Updater};
+use docs_rs::utils::{remove_crate_priority, set_crate_priority, RepositoryStatsUpdater};
 use docs_rs::{
     BuildQueue, Config, Context, DocBuilder, Index, Metrics, PackageKind, RustwideBuilder, Server,
     Storage,
@@ -422,33 +422,11 @@ impl DatabaseSubcommand {
             }
 
             Self::UpdateRepositoriesFields => {
-                let mut errors = Vec::new();
-                match docs_rs::utils::GithubUpdater::new(ctx.config()?, ctx.pool()?)? {
-                    Some(up) => up.update_all_crates()?,
-                    None => errors.push("missing GitHub token"),
-                }
-                match docs_rs::utils::GitlabUpdater::new(ctx.config()?, ctx.pool()?)? {
-                    Some(up) => up.update_all_crates()?,
-                    None => errors.push("missing Gitlab token"),
-                }
-                if !errors.is_empty() {
-                    return Err(failure::format_err!("{}", errors.join("\n")));
-                }
+                RepositoryStatsUpdater::update_all_crates(&ctx)?;
             }
 
             Self::BackfillRepositoriesStats => {
-                let mut errors = Vec::new();
-                match docs_rs::utils::GithubUpdater::new(ctx.config()?, ctx.pool()?)? {
-                    Some(up) => up.backfill_repositories()?,
-                    None => errors.push("missing GitHub token"),
-                }
-                match docs_rs::utils::GitlabUpdater::new(ctx.config()?, ctx.pool()?)? {
-                    Some(up) => up.backfill_repositories()?,
-                    None => errors.push("missing Gitlab token"),
-                }
-                if !errors.is_empty() {
-                    return Err(failure::format_err!("{}", errors.join("\n")));
-                }
+                RepositoryStatsUpdater::backfill_repositories(&ctx)?;
             }
 
             Self::UpdateCrateRegistryFields { name } => {

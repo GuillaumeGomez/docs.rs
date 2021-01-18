@@ -205,6 +205,10 @@ impl Updater for GithubUpdater {
             None => None,
         }
     }
+
+    fn name() -> &'static str {
+        "Github"
+    }
 }
 
 impl GithubUpdater {
