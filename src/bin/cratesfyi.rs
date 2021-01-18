@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use docs_rs::db::{self, add_path_into_database, Pool, PoolClient};
-use docs_rs::utils::{remove_crate_priority, set_crate_priority};
+use docs_rs::utils::{remove_crate_priority, set_crate_priority, Updater};
 use docs_rs::{
     BuildQueue, Config, Context, DocBuilder, Index, Metrics, PackageKind, RustwideBuilder, Server,
     Storage,
@@ -371,17 +371,11 @@ enum DatabaseSubcommand {
         version: Option<i64>,
     },
 
-    /// Updates github stats for crates.
-    UpdateGithubFields,
+    /// Updates Github/Gitlab stats for crates.
+    UpdateRepositoriesFields,
 
-    /// Backfill GitHub stats for crates.
-    BackfillGithubStats,
-
-    /// Updates gitlab stats for crates.
-    UpdateGitlabFields,
-
-    /// Backfill Gitlab stats for crates.
-    BackfillGitlabStats,
+    /// Backfill GitHub/Gitlab stats for crates.
+    BackfillRepositoriesStats,
 
     /// Updates info for a crate from the registry's API
     UpdateCrateRegistryFields {
@@ -427,28 +421,34 @@ impl DatabaseSubcommand {
                     .context("Failed to run database migrations")?;
             }
 
-            Self::UpdateGithubFields => {
-                docs_rs::utils::GithubUpdater::new(ctx.config()?, ctx.pool()?)?
-                    .ok_or_else(|| failure::format_err!("missing GitHub token"))?
-                    .update_all_crates()?;
+            Self::UpdateRepositoriesFields => {
+                let mut errors = Vec::new();
+                match docs_rs::utils::GithubUpdater::new(ctx.config()?, ctx.pool()?)? {
+                    Some(up) => up.update_all_crates()?,
+                    None => errors.push("missing GitHub token"),
+                }
+                match docs_rs::utils::GitlabUpdater::new(ctx.config()?, ctx.pool()?)? {
+                    Some(up) => up.update_all_crates()?,
+                    None => errors.push("missing Gitlab token"),
+                }
+                if !errors.is_empty() {
+                    return Err(failure::format_err!("{}", errors.join("\n")));
+                }
             }
 
-            Self::BackfillGithubStats => {
-                docs_rs::utils::GithubUpdater::new(ctx.config()?, ctx.pool()?)?
-                    .ok_or_else(|| failure::format_err!("missing GitHub token"))?
-                    .backfill_repositories()?;
-            }
-
-            Self::UpdateGitlabFields => {
-                docs_rs::utils::GitlabUpdater::new(ctx.config()?, ctx.pool()?)?
-                    .ok_or_else(|| failure::format_err!("missing Gitlab token"))?
-                    .update_all_crates()?;
-            }
-
-            Self::BackfillGitlabStats => {
-                docs_rs::utils::GitlabUpdater::new(ctx.config()?, ctx.pool()?)?
-                    .ok_or_else(|| failure::format_err!("missing Gitlab token"))?
-                    .backfill_repositories()?;
+            Self::BackfillRepositoriesStats => {
+                let mut errors = Vec::new();
+                match docs_rs::utils::GithubUpdater::new(ctx.config()?, ctx.pool()?)? {
+                    Some(up) => up.backfill_repositories()?,
+                    None => errors.push("missing GitHub token"),
+                }
+                match docs_rs::utils::GitlabUpdater::new(ctx.config()?, ctx.pool()?)? {
+                    Some(up) => up.backfill_repositories()?,
+                    None => errors.push("missing Gitlab token"),
+                }
+                if !errors.is_empty() {
+                    return Err(failure::format_err!("{}", errors.join("\n")));
+                }
             }
 
             Self::UpdateCrateRegistryFields { name } => {

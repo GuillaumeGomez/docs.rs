@@ -697,7 +697,7 @@ pub fn migrate(version: Option<Version>, conn: &mut Client) -> CratesfyiResult<(
                 ALTER TABLE releases
                     DROP COLUMN repository;
 
-                DROP TABLE repository;
+                DROP TABLE repositories;
             "
         ),
     ];

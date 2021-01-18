@@ -13,11 +13,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-const APP_USER_AGENT: &str = concat!(
-    env!("CARGO_PKG_NAME"),
-    " ",
-    include_str!(concat!(env!("OUT_DIR"), "/git_version"))
-);
+use crate::utils::{RepositoryName, Updater, APP_USER_AGENT};
 
 const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
     nodes(ids: $ids) {
@@ -58,10 +54,10 @@ pub struct GithubUpdater {
     config: Arc<Config>,
 }
 
-impl GithubUpdater {
+impl Updater for GithubUpdater {
     /// Returns `Err` if the access token has invalid syntax (but *not* if it isn't authorized).
     /// Returns `Ok(None)` if there is no access token.
-    pub fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>> {
+    fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
@@ -72,6 +68,7 @@ impl GithubUpdater {
                 HeaderValue::from_str(&format!("token {}", token))?,
             );
         } else {
+            warn!("did not collect GitHub stats as no token was provided");
             return Ok(None);
         }
 
@@ -84,7 +81,7 @@ impl GithubUpdater {
         }))
     }
 
-    pub fn backfill_repositories(&self) -> Result<()> {
+    fn backfill_repositories(&self) -> Result<()> {
         info!("started backfilling GitHub repository stats");
 
         let mut conn = self.pool.get()?;
@@ -120,8 +117,8 @@ impl GithubUpdater {
         Ok(())
     }
 
-    pub(crate) fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
-        let name = match RepositoryName::from_url(url) {
+    fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
+        let name = match Self::repository_name(url) {
             Some(name) => name,
             None => return Ok(None),
         };
@@ -156,7 +153,7 @@ impl GithubUpdater {
     }
 
     /// Updates github fields in crates table
-    pub fn update_all_crates(&self) -> Result<()> {
+    fn update_all_crates(&self) -> Result<()> {
         info!("started updating GitHub repository stats");
 
         let mut conn = self.pool.get()?;
@@ -190,6 +187,27 @@ impl GithubUpdater {
         Ok(())
     }
 
+    fn repository_name(url: &str) -> Option<RepositoryName> {
+        static RE: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"https?://(www.)?github\.com/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)")
+                .unwrap()
+        });
+
+        match RE.captures(url) {
+            Some(cap) => {
+                let owner = cap.name("owner").expect("missing group 'owner'").as_str();
+                let repo = cap.name("repo").expect("missing group 'repo'").as_str();
+                Some(RepositoryName {
+                    owner,
+                    repo: repo.strip_suffix(".git").unwrap_or(repo),
+                })
+            }
+            None => None,
+        }
+    }
+}
+
+impl GithubUpdater {
     fn update_repositories(&self, conn: &mut Client, node_ids: &[String]) -> Result<()> {
         let response: GraphResponse<GraphNodes<Option<GraphRepository>>> = self.graphql(
             GRAPHQL_UPDATE,
@@ -220,7 +238,7 @@ impl GithubUpdater {
             use GraphErrorPath::*;
             match (error.error_type.as_str(), error.path.as_slice()) {
                 ("NOT_FOUND", [Segment(nodes), Index(idx)]) if nodes == "nodes" => {
-                    self.delete_repository(conn, &node_ids[*idx as usize])?;
+                    self.delete_repository(conn, &node_ids[*idx as usize], "github")?;
                 }
                 _ => failure::bail!("error updating repositories: {}", error.message),
             }
@@ -276,45 +294,6 @@ impl GithubUpdater {
             ],
         )?;
         Ok(rows[0].get(0))
-    }
-
-    fn delete_repository(&self, conn: &mut Client, host_id: &str) -> Result<()> {
-        trace!(
-            "removing GitHub repository stats for host ID `{}` and host `github`",
-            host_id
-        );
-        conn.execute(
-            "DELETE FROM repositories WHERE host = 'github' AND host_id = $1;",
-            &[&host_id],
-        )?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct RepositoryName<'a> {
-    owner: &'a str,
-    repo: &'a str,
-}
-
-impl<'a> RepositoryName<'a> {
-    fn from_url(url: &'a str) -> Option<Self> {
-        static RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"https?://(www.)?github\.com/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)")
-                .unwrap()
-        });
-
-        match RE.captures(url) {
-            Some(cap) => {
-                let owner = cap.name("owner").expect("missing group 'owner'").as_str();
-                let repo = cap.name("repo").expect("missing group 'repo'").as_str();
-                Some(Self {
-                    owner,
-                    repo: repo.strip_suffix(".git").unwrap_or(repo),
-                })
-            }
-            None => None,
-        }
     }
 }
 
@@ -388,7 +367,7 @@ mod test {
         macro_rules! assert_name {
             ($url:expr => ($owner:expr, $repo: expr)) => {
                 assert_eq!(
-                    RepositoryName::from_url($url),
+                    GithubUpdater::repository_name($url),
                     Some(RepositoryName {
                         owner: $owner,
                         repo: $repo

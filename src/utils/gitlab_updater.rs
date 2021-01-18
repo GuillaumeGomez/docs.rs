@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::{db::Pool, Config};
 use chrono::{DateTime, Utc};
-use log::{debug, info, trace, warn};
+use log::{info, trace, warn};
 use once_cell::sync::Lazy;
 use postgres::Client;
 use regex::Regex;
@@ -13,11 +13,7 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-const APP_USER_AGENT: &str = concat!(
-    env!("CARGO_PKG_NAME"),
-    " ",
-    include_str!(concat!(env!("OUT_DIR"), "/git_version"))
-);
+use crate::utils::{RepositoryName, Updater, APP_USER_AGENT};
 
 const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
     projects(ids: $ids) {
@@ -45,27 +41,24 @@ const GRAPHQL_SINGLE: &str = "query($fullPath: ID!) {
     }
 }";
 
-/// How many repositories to update in a single chunk. Values over 100 are probably going to be
-/// rejected by the GraphQL API.
-const UPDATE_CHUNK_SIZE: usize = 100;
+const ALLOWED_HOSTS: &[&str] = &["gitlab.com", "gitlab.freedesktop.org"];
+
+/// How many repositories to update in a single chunk.
+const UPDATE_CHUNK_SIZE: usize = 5;
 
 fn extract_host(url: &str) -> Option<&str> {
-    url.split("//")
-        .skip(1)
-        .next()
-        .and_then(|u| u.split('/').next())
+    url.split("//").nth(1).and_then(|u| u.split('/').next())
 }
 
 pub struct GitlabUpdater {
     client: HttpClient,
     pool: Pool,
-    config: Arc<Config>,
 }
 
-impl GitlabUpdater {
+impl Updater for GitlabUpdater {
     /// Returns `Err` if the access token has invalid syntax (but *not* if it isn't authorized).
     /// Returns `Ok(None)` if there is no access token.
-    pub fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>> {
+    fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
@@ -73,22 +66,18 @@ impl GitlabUpdater {
         if let Some(token) = &config.gitlab_accesstoken {
             headers.insert(
                 AUTHORIZATION,
-                HeaderValue::from_str(&format!("token {}", token))?,
+                HeaderValue::from_str(&format!("Bearer {}", token))?,
             );
         } else {
-            return Ok(None);
+            warn!("will try to retrieve Gitlab stats without token since none was provided");
         }
 
         let client = HttpClient::builder().default_headers(headers).build()?;
 
-        Ok(Some(GitlabUpdater {
-            client,
-            pool,
-            config,
-        }))
+        Ok(Some(GitlabUpdater { client, pool }))
     }
 
-    pub fn backfill_repositories(&self) -> Result<()> {
+    fn backfill_repositories(&self) -> Result<()> {
         info!("started backfilling Gitlab repository stats");
 
         let mut conn = self.pool.get()?;
@@ -124,8 +113,8 @@ impl GitlabUpdater {
         Ok(())
     }
 
-    pub(crate) fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
-        let name = match RepositoryName::from_url(url) {
+    fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
+        let name = match Self::repository_name(url) {
             Some(name) => name,
             None => return Ok(None),
         };
@@ -162,7 +151,7 @@ impl GitlabUpdater {
     }
 
     /// Updates gitlab fields in crates table
-    pub fn update_all_crates(&self) -> Result<()> {
+    fn update_all_crates(&self) -> Result<()> {
         info!("started updating Gitlab repository stats");
 
         let mut conn = self.pool.get()?;
@@ -209,6 +198,30 @@ impl GitlabUpdater {
         Ok(())
     }
 
+    fn repository_name(url: &str) -> Option<RepositoryName> {
+        static RE: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"https?://(?P<host>.+)/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)").unwrap()
+        });
+
+        match RE.captures(url) {
+            Some(cap) => {
+                let host = cap.name("host").expect("missing group 'host'").as_str();
+                if !ALLOWED_HOSTS.iter().any(|s| *s == host) {
+                    return None;
+                }
+                let owner = cap.name("owner").expect("missing group 'owner'").as_str();
+                let repo = cap.name("repo").expect("missing group 'repo'").as_str();
+                Some(RepositoryName {
+                    owner,
+                    repo: repo.strip_suffix(".git").unwrap_or(repo),
+                })
+            }
+            None => None,
+        }
+    }
+}
+
+impl GitlabUpdater {
     fn update_repositories(&self, url: &str, conn: &mut Client, node_ids: &[&str]) -> Result<()> {
         let response: GraphResponse<GraphProjects<Option<GraphProject>>> = self.graphql(
             url,
@@ -221,14 +234,6 @@ impl GitlabUpdater {
         // The error is returned *before* we reach the rate limit, to ensure we always have an
         // amount of API calls we can make at any time.
         if let Some(data) = response.data {
-            // trace!(
-            //     "Gitlab GraphQL rate limit remaining: {}",
-            //     data.rate_limit.remaining
-            // );
-            // if data.rate_limit.remaining < self.config.gitlab_updater_min_rate_limit {
-            //     return Err(RateLimitReached.into());
-            // }
-
             // When a node is missing (for example if the repository was deleted or made private) the
             // GraphQL API will return *both* a `null` instead of the data in the nodes list and a
             // `NOT_FOUND` error in the errors list.
@@ -237,8 +242,8 @@ impl GitlabUpdater {
                     self.store_repository(url, conn, &node)?;
                 }
             }
-            for error in &response.errors {
-                failure::bail!("error updating repositories: {}", error.message);
+            if !response.errors.is_empty() {
+                failure::bail!("error updating repositories: {:?}", response.errors);
             }
 
             Ok(())
@@ -253,8 +258,6 @@ impl GitlabUpdater {
         query: &str,
         variables: impl serde::Serialize,
     ) -> Result<GraphResponse<T>> {
-        eprintln!("doing stuff on {:?}", host);
-        eprintln!("+++> {:?}", query);
         Ok(self
             .client
             .post(&format!("https://{}/api/graphql", host))
@@ -265,19 +268,6 @@ impl GitlabUpdater {
             .send()?
             .error_for_status()?
             .json()?)
-        // let tmp = self
-        //     .client
-        //     .post(&format!("https://{}/api/graphql", host))
-        //     .json(&serde_json::json!({
-        //         "query": query,
-        //         "variables": variables,
-        //     }))
-        //     .send()?
-        //     .error_for_status()?;
-        // eprintln!("---> {:?}", tmp.headers());
-        // let s: String = tmp.text()?;
-        // eprintln!("---> {:?}", s);
-        // panic!("yolo");
     }
 
     fn store_repository(&self, host: &str, conn: &mut Client, repo: &GraphProject) -> Result<i32> {
@@ -311,52 +301,6 @@ impl GitlabUpdater {
             ],
         )?;
         Ok(rows[0].get(0))
-    }
-
-    fn delete_repository(&self, conn: &mut Client, host_id: &str, host: &str) -> Result<()> {
-        trace!(
-            "removing Gitlab repository stats for host ID `{}` and host `{}`",
-            host_id,
-            host
-        );
-        conn.execute(
-            "DELETE FROM repositories WHERE host_id = $1 AND host = $2;",
-            &[&host_id, &host],
-        )?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct RepositoryName<'a> {
-    owner: &'a str,
-    repo: &'a str,
-}
-
-const HOSTS: &[&str] = &["gitlab.com", "gitlab.freedesktop.org"];
-
-impl<'a> RepositoryName<'a> {
-    fn from_url(url: &'a str) -> Option<Self> {
-        static RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"https?://(?P<host>[\w\.]*gitlab\.[\w\.?]+)/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)")
-                .unwrap()
-        });
-
-        match RE.captures(url) {
-            Some(cap) => {
-                let host = cap.name("host").expect("missing group 'host'").as_str();
-                if !HOSTS.iter().any(|s| *s == host) {
-                    return None;
-                }
-                let owner = cap.name("owner").expect("missing group 'owner'").as_str();
-                let repo = cap.name("repo").expect("missing group 'repo'").as_str();
-                Some(Self {
-                    owner,
-                    repo: repo.strip_suffix(".git").unwrap_or(repo),
-                })
-            }
-            None => None,
-        }
     }
 }
 
@@ -423,9 +367,9 @@ mod test {
     #[test]
     fn test_repository_name() {
         macro_rules! assert_name {
-            ($url:expr => ($owner:expr, $repo: expr)) => {
+            ($url:expr => ($owner:expr, $repo:expr)) => {
                 assert_eq!(
-                    RepositoryName::from_url($url),
+                    GitlabUpdater::repository_name($url),
                     Some(RepositoryName {
                         owner: $owner,
                         repo: $repo
@@ -436,15 +380,10 @@ mod test {
 
         assert_name!("https://gitlab.com/onur/cratesfyi" => ("onur", "cratesfyi"));
         assert_name!("http://gitlab.com/onur/cratesfyi" => ("onur", "cratesfyi"));
-        assert_name!("https://www.gitlab.com/onur/cratesfyi" => ("onur", "cratesfyi"));
-        assert_name!("http://www.gitlab.com/onur/cratesfyi" => ("onur", "cratesfyi"));
         assert_name!("https://gitlab.com/onur/cratesfyi.git" => ("onur", "cratesfyi"));
         assert_name!("https://gitlab.com/docopt/docopt.rs" => ("docopt", "docopt.rs"));
         assert_name!("https://gitlab.com/onur23cmD_M_R_L_/crates_fy-i" => (
             "onur23cmD_M_R_L_", "crates_fy-i"
-        ));
-        assert_name!("https://freedesktop.gitlab.org/test/test" => (
-            "test", "test"
         ));
         assert_name!("https://gitlab.freedesktop.org/test/test" => (
             "test", "test"

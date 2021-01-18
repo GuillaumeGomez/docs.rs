@@ -3,7 +3,7 @@
 //! This daemon will start web server, track new packages and build them
 
 use crate::{
-    utils::{queue_builder, GithubUpdater, GitlabUpdater},
+    utils::{queue_builder, GithubUpdater, GitlabUpdater, Updater},
     Context, DocBuilder, RustwideBuilder,
 };
 use failure::Error;
@@ -99,8 +99,6 @@ pub fn start_daemon(context: &dyn Context, enable_registry_watcher: bool) -> Res
                 Ok(())
             },
         )?;
-    } else {
-        log::warn!("Gitlab stats updater not started as no token was provided");
     }
 
     // Never returns; `server` blocks indefinitely when dropped

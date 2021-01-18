@@ -368,19 +368,20 @@ struct FakeGithubStats {
 }
 
 impl FakeGithubStats {
-    fn create(&self, conn: &mut Client) -> Result<String, Error> {
+    fn create(&self, conn: &mut Client) -> Result<i32, Error> {
         let existing_count: i64 = conn
             .query_one("SELECT COUNT(*) FROM repositories;", &[])?
             .get(0);
-        let id = base64::encode(format!("FAKE ID {}", existing_count));
+        let host_id = base64::encode(format!("FAKE ID {}", existing_count));
 
-        conn.execute(
+        let data = conn.query(
             "INSERT INTO repositories (host, host_id, name, description, last_commit, stars, forks, issues, updated_at)
-             VALUES ('github', $1, $2, 'Fake description!', NOW(), $3, $4, $5, NOW());",
-            &[&id, &self.repo, &self.stars, &self.forks, &self.issues],
+             VALUES ('github', $1, $2, 'Fake description!', NOW(), $3, $4, $5, NOW())
+             RETURNING id;",
+            &[&host_id, &self.repo, &self.stars, &self.forks, &self.issues],
         )?;
 
-        Ok(id)
+        Ok(data[0].get(0))
     }
 }
 
