@@ -6,8 +6,9 @@ use crate::db::{
 use crate::docbuilder::{crates::crates_from_path, Limits};
 use crate::error::Result;
 use crate::index::api::ReleaseData;
+use crate::repositories::RepositoryStatsUpdater;
 use crate::storage::CompressionAlgorithms;
-use crate::utils::{copy_doc_dir, parse_rustc_version, CargoMetadata, RepositoryStatsUpdater};
+use crate::utils::{copy_doc_dir, parse_rustc_version, CargoMetadata};
 use crate::{db::blacklist::is_blacklisted, utils::MetadataPackage};
 use crate::{Config, Context, Index, Metrics, Storage};
 use docsrs_metadata::{Metadata, DEFAULT_TARGETS, HOST_TARGET};

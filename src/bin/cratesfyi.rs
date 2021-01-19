@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use docs_rs::db::{self, add_path_into_database, Pool, PoolClient};
-use docs_rs::utils::{remove_crate_priority, set_crate_priority, RepositoryStatsUpdater};
+use docs_rs::repositories::RepositoryStatsUpdater;
+use docs_rs::utils::{remove_crate_priority, set_crate_priority};
 use docs_rs::{
     BuildQueue, Config, Context, DocBuilder, Index, Metrics, PackageKind, RustwideBuilder, Server,
     Storage,

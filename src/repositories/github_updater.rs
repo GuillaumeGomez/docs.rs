@@ -10,7 +10,7 @@ use reqwest::{
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::utils::{Updater, APP_USER_AGENT};
+use crate::repositories::{Updater, APP_USER_AGENT};
 
 const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
     nodes(ids: $ids) {
@@ -309,7 +309,7 @@ struct GraphIssues {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::utils::RepositoryName;
+    use crate::repositories::RepositoryName;
 
     #[test]
     fn test_repository_name() {
@@ -324,16 +324,20 @@ mod test {
                     })
                 );
             };
+            ($url:expr => None) => {
+                assert_eq!(GithubUpdater::repository_name($url), None);
+            };
         }
 
         assert_name!("https://github.com/onur/cratesfyi" => ("onur", "cratesfyi", "github.com"));
         assert_name!("http://github.com/onur/cratesfyi" => ("onur", "cratesfyi", "github.com"));
-        assert_name!("https://www.github.com/onur/cratesfyi" => ("onur", "cratesfyi", "www.github.com"));
-        assert_name!("http://www.github.com/onur/cratesfyi" => ("onur", "cratesfyi", "www.github.com"));
         assert_name!("https://github.com/onur/cratesfyi.git" => ("onur", "cratesfyi", "github.com"));
         assert_name!("https://github.com/docopt/docopt.rs" => ("docopt", "docopt.rs", "github.com"));
         assert_name!("https://github.com/onur23cmD_M_R_L_/crates_fy-i" => (
             "onur23cmD_M_R_L_", "crates_fy-i", "github.com"
         ));
+        assert_name!("https://www.github.com/onur/cratesfyi" => None);
+        assert_name!("http://www.github.com/onur/cratesfyi" => None);
+        assert_name!("http://www.gitlab.com/onur/cratesfyi" => None);
     }
 }

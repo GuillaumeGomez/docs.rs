@@ -3,7 +3,8 @@
 //! This daemon will start web server, track new packages and build them
 
 use crate::{
-    utils::{queue_builder, RepositoryStatsUpdater},
+    repositories::RepositoryStatsUpdater,
+    utils::queue_builder,
     Context, DocBuilder, RustwideBuilder,
 };
 use failure::Error;

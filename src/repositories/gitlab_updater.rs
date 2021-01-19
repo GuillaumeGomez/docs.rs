@@ -10,7 +10,7 @@ use reqwest::{
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::utils::{Updater, APP_USER_AGENT};
+use crate::repositories::{Updater, APP_USER_AGENT};
 
 const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
     projects(ids: $ids) {
@@ -287,7 +287,7 @@ struct GraphProject {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::utils::RepositoryName;
+    use crate::repositories::RepositoryName;
 
     #[test]
     fn test_repository_name() {
@@ -302,6 +302,9 @@ mod test {
                     })
                 );
             };
+            ($url:expr => None) => {
+                assert_eq!(GitlabUpdater::repository_name($url), None);
+            };
         }
 
         assert_name!("https://gitlab.com/onur/cratesfyi" => ("onur", "cratesfyi", "gitlab.com"));
@@ -314,5 +317,7 @@ mod test {
         assert_name!("https://gitlab.freedesktop.org/test/test" => (
             "test", "test", "gitlab.freedesktop.org"
         ));
+        assert_name!("https://www.github.com/onur/cratesfyi" => None);
+        assert_name!("https://github.com/onur/cratesfyi" => None);
     }
 }

@@ -1,6 +1,6 @@
 use crate::error::Result;
-use crate::utils::daemon::cron;
-use crate::utils::{GithubUpdater, GitlabUpdater, MetadataPackage};
+use crate::repositories::{GithubUpdater, GitlabUpdater};
+use crate::utils::{daemon::cron, MetadataPackage};
 use crate::{db::Pool, Config, Context};
 use chrono::{DateTime, Utc};
 use log::{debug, info, trace, warn};
@@ -10,12 +10,6 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-
-pub const APP_USER_AGENT: &str = concat!(
-    env!("CARGO_PKG_NAME"),
-    " ",
-    include_str!(concat!(env!("OUT_DIR"), "/git_version"))
-);
 
 pub trait Updater {
     fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>>
@@ -41,6 +35,7 @@ pub trait Updater {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn store_repository(
         &self,
         conn: &mut Client,
