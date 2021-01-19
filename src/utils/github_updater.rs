@@ -193,17 +193,13 @@ impl Updater for GithubUpdater {
                 .unwrap()
         });
 
-        match RE.captures(url) {
-            Some(cap) => {
-                let owner = cap.name("owner").expect("missing group 'owner'").as_str();
-                let repo = cap.name("repo").expect("missing group 'repo'").as_str();
-                Some(RepositoryName {
-                    owner,
-                    repo: repo.strip_suffix(".git").unwrap_or(repo),
-                })
-            }
-            None => None,
-        }
+        let cap = RE.captures(url)?;
+        let owner = cap.name("owner").expect("missing group 'owner'").as_str();
+        let repo = cap.name("repo").expect("missing group 'repo'").as_str();
+        Some(RepositoryName {
+            owner,
+            repo: repo.strip_suffix(".git").unwrap_or(repo),
+        })
     }
 
     fn name() -> &'static str {
@@ -273,7 +269,7 @@ impl GithubUpdater {
             "storing GitHub repository stats for {}",
             repo.name_with_owner
         );
-        let rows = conn.query(
+        let data = conn.query_one(
             "INSERT INTO repositories (
                  host, host_id, name, description, last_commit, stars, forks, issues, updated_at
              ) VALUES ('github', $1, $2, $3, $4, $5, $6, $7, NOW())
@@ -297,7 +293,7 @@ impl GithubUpdater {
                 &(repo.issues.total_count as i32),
             ],
         )?;
-        Ok(rows[0].get(0))
+        Ok(data.get(0))
     }
 }
 

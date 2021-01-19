@@ -372,10 +372,10 @@ enum DatabaseSubcommand {
     },
 
     /// Updates Github/Gitlab stats for crates.
-    UpdateRepositoriesFields,
+    UpdateRepositoryFields,
 
     /// Backfill GitHub/Gitlab stats for crates.
-    BackfillRepositoriesStats,
+    BackfillRepositoryStats,
 
     /// Updates info for a crate from the registry's API
     UpdateCrateRegistryFields {
@@ -421,11 +421,11 @@ impl DatabaseSubcommand {
                     .context("Failed to run database migrations")?;
             }
 
-            Self::UpdateRepositoriesFields => {
+            Self::UpdateRepositoryFields => {
                 RepositoryStatsUpdater::update_all_crates(&ctx)?;
             }
 
-            Self::BackfillRepositoriesStats => {
+            Self::BackfillRepositoryStats => {
                 RepositoryStatsUpdater::backfill_repositories(&ctx)?;
             }
 

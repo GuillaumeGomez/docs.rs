@@ -81,32 +81,34 @@ impl Updater for GitlabUpdater {
         info!("started backfilling Gitlab repository stats");
 
         let mut conn = self.pool.get()?;
-        let needs_backfilling = conn.query(
-            "SELECT releases.id, crates.name, releases.version, releases.repository_url
-             FROM releases
-             INNER JOIN crates ON (crates.id = releases.crate_id)
-             WHERE repository IS NULL AND repository_url LIKE '%gitlab.%/%';",
-            &[],
-        )?;
+        for host in ALLOWED_HOSTS {
+            let needs_backfilling = conn.query(
+                "SELECT releases.id, crates.name, releases.version, releases.repository_url
+                 FROM releases
+                 INNER JOIN crates ON (crates.id = releases.crate_id)
+                 WHERE repository IS NULL AND repository_url = $1;",
+                &[host],
+            )?;
 
-        let mut missing_urls = HashSet::new();
-        for row in &needs_backfilling {
-            let id: i32 = row.get("id");
-            let name: String = row.get("name");
-            let version: String = row.get("version");
-            let url: String = row.get("repository_url");
+            let mut missing_urls = HashSet::new();
+            for row in &needs_backfilling {
+                let id: i32 = row.get("id");
+                let name: String = row.get("name");
+                let version: String = row.get("version");
+                let url: String = row.get("repository_url");
 
-            if missing_urls.contains(&url) {
-                eprintln!("{} {} points to a known missing repo", name, version);
-            } else if let Some(node_id) = self.load_repository(&mut conn, &url)? {
-                conn.execute(
-                    "UPDATE releases SET repository = $1 WHERE id = $2;",
-                    &[&node_id, &id],
-                )?;
-                info!("backfilled Gitlab repository for {} {}", name, version);
-            } else {
-                eprintln!("{} {} does not point to a Gitlab repository", name, version);
-                missing_urls.insert(url);
+                if missing_urls.contains(&url) {
+                    eprintln!("{} {} points to a known missing repo", name, version);
+                } else if let Some(node_id) = self.load_repository(&mut conn, &url)? {
+                    conn.execute(
+                        "UPDATE releases SET repository = $1 WHERE id = $2;",
+                        &[&node_id, &id],
+                    )?;
+                    info!("backfilled Gitlab repository for {} {}", name, version);
+                } else {
+                    eprintln!("{} {} does not point to a Gitlab repository", name, version);
+                    missing_urls.insert(url);
+                }
             }
         }
 
@@ -203,21 +205,17 @@ impl Updater for GitlabUpdater {
             Regex::new(r"https?://(?P<host>.+)/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)").unwrap()
         });
 
-        match RE.captures(url) {
-            Some(cap) => {
-                let host = cap.name("host").expect("missing group 'host'").as_str();
-                if !ALLOWED_HOSTS.iter().any(|s| *s == host) {
-                    return None;
-                }
-                let owner = cap.name("owner").expect("missing group 'owner'").as_str();
-                let repo = cap.name("repo").expect("missing group 'repo'").as_str();
-                Some(RepositoryName {
-                    owner,
-                    repo: repo.strip_suffix(".git").unwrap_or(repo),
-                })
-            }
-            None => None,
+        let cap = RE.captures(url)?;
+        let host = cap.name("host").expect("missing group 'host'").as_str();
+        if !ALLOWED_HOSTS.iter().any(|s| *s == host) {
+            return None;
         }
+        let owner = cap.name("owner").expect("missing group 'owner'").as_str();
+        let repo = cap.name("repo").expect("missing group 'repo'").as_str();
+        Some(RepositoryName {
+            owner,
+            repo: repo.strip_suffix(".git").unwrap_or(repo),
+        })
     }
 
     fn name() -> &'static str {
@@ -279,7 +277,7 @@ impl GitlabUpdater {
             "storing Gitlab repository stats for {}",
             repo.name_with_namespace
         );
-        let rows = conn.query(
+        let data = conn.query_one(
             "INSERT INTO repositories (
                  host, host_id, name, description, last_commit, stars, forks, issues, updated_at
              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
@@ -304,7 +302,7 @@ impl GitlabUpdater {
                 &(repo.open_issues_count as i32),
             ],
         )?;
-        Ok(rows[0].get(0))
+        Ok(data.get(0))
     }
 }
 
