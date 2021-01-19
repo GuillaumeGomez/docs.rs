@@ -2,8 +2,12 @@ use crate::error::Result;
 use crate::utils::daemon::cron;
 use crate::utils::{GithubUpdater, GitlabUpdater, MetadataPackage};
 use crate::{db::Pool, Config, Context};
-use log::{debug, trace, warn};
+use chrono::{DateTime, Utc};
+use log::{debug, info, trace, warn};
+use once_cell::sync::Lazy;
 use postgres::Client;
+use regex::Regex;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,11 +21,12 @@ pub trait Updater {
     fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>>
     where
         Self: Sized;
-    fn backfill_repositories(&self) -> Result<()>;
     fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>>;
     fn update_all_crates(&self) -> Result<()>;
-    fn repository_name(url: &str) -> Option<RepositoryName>;
     fn name() -> &'static str;
+    fn hosts() -> &'static [&'static str];
+    fn pool(&self) -> &Pool;
+
     fn delete_repository(&self, conn: &mut Client, host_id: &str, host: &str) -> Result<()> {
         trace!(
             "removing {} repository stats for host ID `{}` and host `{}`",
@@ -34,6 +39,118 @@ pub trait Updater {
             &[&host_id, &host],
         )?;
         Ok(())
+    }
+
+    fn store_repository(
+        &self,
+        conn: &mut Client,
+        host: &str,
+        repo_id: &str,
+        name_with_owner: &str,
+        description: &Option<String>,
+        last_activity_at: &Option<DateTime<Utc>>,
+        star_count: i64,
+        fork_count: i64,
+        open_issues_count: i64,
+    ) -> Result<i32> {
+        trace!(
+            "storing {} repository stats for {}",
+            Self::name(),
+            name_with_owner,
+        );
+        let data = conn.query_one(
+            "INSERT INTO repositories (
+                 host, host_id, name, description, last_commit, stars, forks, issues, updated_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+             ON CONFLICT (host, host_id) DO
+             UPDATE SET
+                 name = $3,
+                 description = $4,
+                 last_commit = $5,
+                 stars = $6,
+                 forks = $7,
+                 issues = $8,
+                 updated_at = NOW()
+             RETURNING id;",
+            &[
+                &host,
+                &repo_id,
+                &name_with_owner,
+                &description,
+                &last_activity_at,
+                &(star_count as i32),
+                &(fork_count as i32),
+                &(open_issues_count as i32),
+            ],
+        )?;
+        Ok(data.get(0))
+    }
+
+    fn backfill_repositories(&self) -> Result<()> {
+        info!("started backfilling {} repository stats", Self::name());
+
+        let mut conn = self.pool().get()?;
+        for host in Self::hosts() {
+            let needs_backfilling = conn.query(
+                "SELECT releases.id, crates.name, releases.version, releases.repository_url
+                 FROM releases
+                 INNER JOIN crates ON (crates.id = releases.crate_id)
+                 WHERE repository IS NULL AND repository_url LIKE $1;",
+                &[&format!("%{}%", host)],
+            )?;
+
+            let mut missing_urls = HashSet::new();
+            for row in &needs_backfilling {
+                let id: i32 = row.get("id");
+                let name: String = row.get("name");
+                let version: String = row.get("version");
+                let url: String = row.get("repository_url");
+
+                if missing_urls.contains(&url) {
+                    debug!("{} {} points to a known missing repo", name, version);
+                } else if let Some(node_id) = self.load_repository(&mut conn, &url)? {
+                    conn.execute(
+                        "UPDATE releases SET repository = $1 WHERE id = $2;",
+                        &[&node_id, &id],
+                    )?;
+                    info!(
+                        "backfilled {} repository for {} {}",
+                        Self::name(),
+                        name,
+                        version
+                    );
+                } else {
+                    debug!(
+                        "{} {} does not point to a {} repository",
+                        Self::name(),
+                        name,
+                        version
+                    );
+                    missing_urls.insert(url);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn repository_name(url: &str) -> Option<RepositoryName> {
+        static RE: Lazy<Regex> = Lazy::new(|| {
+            Regex::new(r"https?://(?P<host>.+)/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)").unwrap()
+        });
+
+        let cap = RE.captures(url)?;
+        let host = cap.name("host").expect("missing group 'host'").as_str();
+        if !Self::hosts().iter().any(|s| *s == host) {
+            return None;
+        }
+        let owner = cap.name("owner").expect("missing group 'owner'").as_str();
+        let repo = cap.name("repo").expect("missing group 'repo'").as_str();
+        Some(RepositoryName {
+            owner,
+            repo: repo.strip_suffix(".git").unwrap_or(repo),
+            host,
+        })
     }
 }
 
@@ -152,4 +269,5 @@ impl RepositoryStatsUpdater {
 pub struct RepositoryName<'a> {
     pub owner: &'a str,
     pub repo: &'a str,
+    pub host: &'a str,
 }

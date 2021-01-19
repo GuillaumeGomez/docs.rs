@@ -1,19 +1,16 @@
 use crate::error::Result;
 use crate::{db::Pool, Config};
 use chrono::{DateTime, Utc};
-use log::{debug, info, trace, warn};
-use once_cell::sync::Lazy;
+use log::{info, trace, warn};
 use postgres::Client;
-use regex::Regex;
 use reqwest::{
     blocking::Client as HttpClient,
     header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT},
 };
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::utils::{RepositoryName, Updater, APP_USER_AGENT};
+use crate::utils::{Updater, APP_USER_AGENT};
 
 const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
     nodes(ids: $ids) {
@@ -81,42 +78,6 @@ impl Updater for GithubUpdater {
         }))
     }
 
-    fn backfill_repositories(&self) -> Result<()> {
-        info!("started backfilling GitHub repository stats");
-
-        let mut conn = self.pool.get()?;
-        let needs_backfilling = conn.query(
-            "SELECT releases.id, crates.name, releases.version, releases.repository_url
-             FROM releases
-             INNER JOIN crates ON (crates.id = releases.crate_id)
-             WHERE repository IS NULL AND repository_url LIKE '%github.com%';",
-            &[],
-        )?;
-
-        let mut missing_urls = HashSet::new();
-        for row in &needs_backfilling {
-            let id: i32 = row.get("id");
-            let name: String = row.get("name");
-            let version: String = row.get("version");
-            let url: String = row.get("repository_url");
-
-            if missing_urls.contains(&url) {
-                debug!("{} {} points to a known missing repo", name, version);
-            } else if let Some(node_id) = self.load_repository(&mut conn, &url)? {
-                conn.execute(
-                    "UPDATE releases SET repository = $1 WHERE id = $2;",
-                    &[&node_id, &id],
-                )?;
-                info!("backfilled GitHub repository for {} {}", name, version);
-            } else {
-                debug!("{} {} does not point to a GitHub repository", name, version);
-                missing_urls.insert(url);
-            }
-        }
-
-        Ok(())
-    }
-
     fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
         let name = match Self::repository_name(url) {
             Some(name) => name,
@@ -125,8 +86,8 @@ impl Updater for GithubUpdater {
 
         // Avoid querying the GitHub API for repositories we already loaded.
         if let Some(row) = conn.query_opt(
-            "SELECT id FROM repositories WHERE name = $1 AND host = 'github' LIMIT 1;",
-            &[&format!("{}/{}", name.owner, name.repo)],
+            "SELECT id FROM repositories WHERE name = $1 AND host = $2 LIMIT 1;",
+            &[&format!("{}/{}", name.owner, name.repo), &name.host],
         )? {
             return Ok(Some(row.get("id")));
         }
@@ -140,7 +101,17 @@ impl Updater for GithubUpdater {
             }),
         )?;
         if let Some(repo) = response.data.repository {
-            Ok(Some(self.store_repository(conn, &repo)?))
+            Ok(Some(self.store_repository(
+                conn,
+                Self::hosts()[0],
+                &repo.id,
+                &repo.name_with_owner,
+                &repo.description,
+                &repo.pushed_at,
+                repo.stargazer_count,
+                repo.fork_count,
+                repo.issues.total_count,
+            )?))
         } else if let Some(error) = response.errors.get(0) {
             use GraphErrorPath::*;
             match (error.error_type.as_str(), error.path.as_slice()) {
@@ -156,54 +127,51 @@ impl Updater for GithubUpdater {
     fn update_all_crates(&self) -> Result<()> {
         info!("started updating GitHub repository stats");
 
+        let mut updated = 0;
         let mut conn = self.pool.get()?;
-        let needs_update = conn
-            .query(
-                "SELECT host_id
-                 FROM repositories
-                 WHERE host = 'github' AND updated_at < NOW() - INTERVAL '1 day';",
-                &[],
-            )?
-            .into_iter()
-            .map(|row| row.get(0))
-            .collect::<Vec<String>>();
+        for host in Self::hosts() {
+            let needs_update = conn
+                .query(
+                    "SELECT host_id
+                     FROM repositories
+                     WHERE host = $1 AND updated_at < NOW() - INTERVAL '1 day';",
+                    &[&host],
+                )?
+                .into_iter()
+                .map(|row| row.get(0))
+                .collect::<Vec<String>>();
 
-        if needs_update.is_empty() {
-            info!("no GitHub repository stats needed to be updated");
-            return Ok(());
-        }
-
-        for chunk in needs_update.chunks(UPDATE_CHUNK_SIZE) {
-            if let Err(err) = self.update_repositories(&mut conn, &chunk) {
-                if err.downcast_ref::<RateLimitReached>().is_some() {
-                    warn!("rate limit reached, blocked the GitHub repository stats updater");
-                    return Ok(());
+            for chunk in needs_update.chunks(UPDATE_CHUNK_SIZE) {
+                if let Err(err) = self.update_repositories(&mut conn, &chunk) {
+                    if err.downcast_ref::<RateLimitReached>().is_some() {
+                        warn!("rate limit reached, blocked the GitHub repository stats updater");
+                        return Ok(());
+                    }
+                    return Err(err);
                 }
-                return Err(err);
             }
+
+            updated += needs_update.len();
         }
 
-        info!("finished updating GitHub repository stats");
+        if updated == 0 {
+            info!("no GitHub repository stats needed to be updated");
+        } else {
+            info!("finished updating GitHub repository stats");
+        }
         Ok(())
-    }
-
-    fn repository_name(url: &str) -> Option<RepositoryName> {
-        static RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"https?://(www.)?github\.com/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)")
-                .unwrap()
-        });
-
-        let cap = RE.captures(url)?;
-        let owner = cap.name("owner").expect("missing group 'owner'").as_str();
-        let repo = cap.name("repo").expect("missing group 'repo'").as_str();
-        Some(RepositoryName {
-            owner,
-            repo: repo.strip_suffix(".git").unwrap_or(repo),
-        })
     }
 
     fn name() -> &'static str {
         "Github"
+    }
+
+    fn hosts() -> &'static [&'static str] {
+        &["github.com"]
+    }
+
+    fn pool(&self) -> &Pool {
+        &self.pool
     }
 }
 
@@ -226,19 +194,31 @@ impl GithubUpdater {
             return Err(RateLimitReached.into());
         }
 
+        let host = Self::hosts()[0];
+
         // When a node is missing (for example if the repository was deleted or made private) the
         // GraphQL API will return *both* a `null` instead of the data in the nodes list and a
         // `NOT_FOUND` error in the errors list.
         for node in &response.data.nodes {
             if let Some(node) = node {
-                self.store_repository(conn, &node)?;
+                self.store_repository(
+                    conn,
+                    host,
+                    &node.id,
+                    &node.name_with_owner,
+                    &node.description,
+                    &node.pushed_at,
+                    node.stargazer_count,
+                    node.fork_count,
+                    node.issues.total_count,
+                )?;
             }
         }
         for error in &response.errors {
             use GraphErrorPath::*;
             match (error.error_type.as_str(), error.path.as_slice()) {
                 ("NOT_FOUND", [Segment(nodes), Index(idx)]) if nodes == "nodes" => {
-                    self.delete_repository(conn, &node_ids[*idx as usize], "github")?;
+                    self.delete_repository(conn, &node_ids[*idx as usize], host)?;
                 }
                 _ => failure::bail!("error updating repositories: {}", error.message),
             }
@@ -262,38 +242,6 @@ impl GithubUpdater {
             .send()?
             .error_for_status()?
             .json()?)
-    }
-
-    fn store_repository(&self, conn: &mut Client, repo: &GraphRepository) -> Result<i32> {
-        trace!(
-            "storing GitHub repository stats for {}",
-            repo.name_with_owner
-        );
-        let data = conn.query_one(
-            "INSERT INTO repositories (
-                 host, host_id, name, description, last_commit, stars, forks, issues, updated_at
-             ) VALUES ('github', $1, $2, $3, $4, $5, $6, $7, NOW())
-             ON CONFLICT (host, host_id) DO
-             UPDATE SET
-                 name = $2,
-                 description = $3,
-                 last_commit = $4,
-                 stars = $5,
-                 forks = $6,
-                 issues = $7,
-                 updated_at = NOW()
-             RETURNING id;",
-            &[
-                &repo.id,
-                &repo.name_with_owner,
-                &repo.description,
-                &repo.pushed_at,
-                &(repo.stargazer_count as i32),
-                &(repo.fork_count as i32),
-                &(repo.issues.total_count as i32),
-            ],
-        )?;
-        Ok(data.get(0))
     }
 }
 
@@ -361,29 +309,31 @@ struct GraphIssues {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::utils::RepositoryName;
 
     #[test]
     fn test_repository_name() {
         macro_rules! assert_name {
-            ($url:expr => ($owner:expr, $repo: expr)) => {
+            ($url:expr => ($owner:expr, $repo:expr, $host:expr)) => {
                 assert_eq!(
                     GithubUpdater::repository_name($url),
                     Some(RepositoryName {
                         owner: $owner,
-                        repo: $repo
+                        repo: $repo,
+                        host: $host,
                     })
                 );
             };
         }
 
-        assert_name!("https://github.com/onur/cratesfyi" => ("onur", "cratesfyi"));
-        assert_name!("http://github.com/onur/cratesfyi" => ("onur", "cratesfyi"));
-        assert_name!("https://www.github.com/onur/cratesfyi" => ("onur", "cratesfyi"));
-        assert_name!("http://www.github.com/onur/cratesfyi" => ("onur", "cratesfyi"));
-        assert_name!("https://github.com/onur/cratesfyi.git" => ("onur", "cratesfyi"));
-        assert_name!("https://github.com/docopt/docopt.rs" => ("docopt", "docopt.rs"));
+        assert_name!("https://github.com/onur/cratesfyi" => ("onur", "cratesfyi", "github.com"));
+        assert_name!("http://github.com/onur/cratesfyi" => ("onur", "cratesfyi", "github.com"));
+        assert_name!("https://www.github.com/onur/cratesfyi" => ("onur", "cratesfyi", "www.github.com"));
+        assert_name!("http://www.github.com/onur/cratesfyi" => ("onur", "cratesfyi", "www.github.com"));
+        assert_name!("https://github.com/onur/cratesfyi.git" => ("onur", "cratesfyi", "github.com"));
+        assert_name!("https://github.com/docopt/docopt.rs" => ("docopt", "docopt.rs", "github.com"));
         assert_name!("https://github.com/onur23cmD_M_R_L_/crates_fy-i" => (
-            "onur23cmD_M_R_L_", "crates_fy-i"
+            "onur23cmD_M_R_L_", "crates_fy-i", "github.com"
         ));
     }
 }

@@ -644,7 +644,7 @@ pub fn migrate(version: Option<Version>, conn: &mut Client) -> CratesfyiResult<(
                     REFERENCES repositories(id) ON DELETE SET NULL;
 
                 INSERT INTO repositories(host, host_id, name, description, last_commit, stars, forks, issues, updated_at)
-                    SELECT 'github', id, name, description, last_commit, stars, forks, issues, updated_at
+                    SELECT 'github.com', id, name, description, last_commit, stars, forks, issues, updated_at
                     FROM github_repos;
 
                 UPDATE releases
@@ -681,12 +681,12 @@ pub fn migrate(version: Option<Version>, conn: &mut Client) -> CratesfyiResult<(
 
                 INSERT INTO github_repos(id, name, description, last_commit, stars, forks, issues, updated_at)
                     SELECT host_id, name, description, last_commit, stars, forks, issues, updated_at
-                    FROM repositories WHERE repositories.host = 'github';
+                    FROM repositories WHERE repositories.host = 'github.com';
 
                 UPDATE releases
                     SET github_repo = repositories.host_id
                 FROM repositories
-                WHERE repositories.host_id = releases.github_repo AND releases.repository IS NOT NULL AND repositories.host = 'github';
+                WHERE repositories.host_id = releases.github_repo AND releases.repository IS NOT NULL AND repositories.host = 'github.com';
 
                 DROP INDEX releases_github_repo_idx;
                 DROP INDEX github_repos_stars_idx;

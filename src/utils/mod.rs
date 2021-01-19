@@ -9,11 +9,13 @@ pub(crate) use self::html::rewrite_lol;
 pub use self::queue::{get_crate_priority, remove_crate_priority, set_crate_priority};
 pub use self::queue_builder::queue_builder;
 pub(crate) use self::rustc_version::parse_rustc_version;
-pub(crate) use self::updater::{RepositoryName, APP_USER_AGENT};
+pub(crate) use self::updater::APP_USER_AGENT;
 pub use self::updater::{RepositoryStatsUpdater, Updater};
 
 #[cfg(test)]
 pub(crate) use self::cargo_metadata::{Dependency, Target};
+#[cfg(test)]
+pub(crate) use self::updater::RepositoryName;
 
 mod cargo_metadata;
 #[cfg(feature = "consistency_check")]

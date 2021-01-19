@@ -376,7 +376,7 @@ impl FakeGithubStats {
 
         let data = conn.query_one(
             "INSERT INTO repositories (host, host_id, name, description, last_commit, stars, forks, issues, updated_at)
-             VALUES ('github', $1, $2, 'Fake description!', NOW(), $3, $4, $5, NOW())
+             VALUES ('github.com', $1, $2, 'Fake description!', NOW(), $3, $4, $5, NOW())
              RETURNING id;",
             &[&host_id, &self.repo, &self.stars, &self.forks, &self.issues],
         )?;
