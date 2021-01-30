@@ -106,6 +106,8 @@ impl Updater for GitlabUpdater {
         } else if let Some(error) = response.errors.get(0) {
             failure::bail!("error loading repository: {}", error.message)
         } else {
+            // When an ID isn't found, gitlab doesn't return an error, it returns a `project` with
+            // `null` as value.
             self.delete_repository(conn, &project_path, url)?;
             Ok(None)
         }
