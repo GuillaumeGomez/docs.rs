@@ -640,7 +640,7 @@ pub fn migrate(version: Option<Version>, conn: &mut Client) -> CratesfyiResult<(
                     UNIQUE (host, host_id)
                 );
 
-                ALTER TABLE releases ADD COLUMN repository INTEGER
+                ALTER TABLE releases ADD COLUMN repository_id INTEGER
                     REFERENCES repositories(id) ON DELETE SET NULL;
 
                 INSERT INTO repositories(host, host_id, name, description, last_commit, stars, forks, issues, updated_at)
@@ -648,14 +648,14 @@ pub fn migrate(version: Option<Version>, conn: &mut Client) -> CratesfyiResult<(
                     FROM github_repos;
 
                 UPDATE releases
-                    SET repository = repositories.id
+                    SET repository_id = repositories.id
                 FROM repositories
                 WHERE releases.github_repo IS NOT NULL AND repositories.host_id = releases.github_repo;
 
                 DROP INDEX releases_github_repo_idx;
                 DROP INDEX github_repos_stars_idx;
 
-                CREATE INDEX releases_github_repo_idx ON releases(repository);
+                CREATE INDEX releases_github_repo_idx ON releases(repository_id);
                 CREATE INDEX github_repos_stars_idx ON repositories(stars DESC);
 
                 ALTER TABLE releases
@@ -686,7 +686,7 @@ pub fn migrate(version: Option<Version>, conn: &mut Client) -> CratesfyiResult<(
                 UPDATE releases
                     SET github_repo = repositories.host_id
                 FROM repositories
-                WHERE repositories.host_id = releases.github_repo AND releases.repository IS NOT NULL AND repositories.host = 'github.com';
+                WHERE repositories.host_id = releases.github_repo AND releases.repository_id IS NOT NULL AND repositories.host = 'github.com';
 
                 DROP INDEX releases_github_repo_idx;
                 DROP INDEX github_repos_stars_idx;
@@ -695,7 +695,7 @@ pub fn migrate(version: Option<Version>, conn: &mut Client) -> CratesfyiResult<(
                 CREATE INDEX github_repos_stars_idx ON github_repos(stars DESC);
 
                 ALTER TABLE releases
-                    DROP COLUMN repository;
+                    DROP COLUMN repository_id;
 
                 DROP TABLE repositories;
             "

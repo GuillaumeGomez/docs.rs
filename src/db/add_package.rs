@@ -56,7 +56,7 @@ pub(crate) fn add_package_into_database(
             authors, keywords, have_examples, downloads, files,
             doc_targets, is_library, doc_rustc_version,
             documentation_url, default_target, features,
-            repository
+            repository_id
          )
          VALUES (
             $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,
@@ -88,7 +88,7 @@ pub(crate) fn add_package_into_database(
                 documentation_url = $24,
                 default_target = $25,
                 features = $26,
-                repository = $27
+                repository_id = $27
          RETURNING id",
         &[
             &crate_id,

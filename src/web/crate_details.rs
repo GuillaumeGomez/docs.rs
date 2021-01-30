@@ -117,7 +117,7 @@ impl CrateDetails {
             FROM releases
             INNER JOIN crates ON releases.crate_id = crates.id
             LEFT JOIN doc_coverage ON doc_coverage.release_id = releases.id
-            LEFT JOIN repositories ON releases.repository = repositories.id
+            LEFT JOIN repositories ON releases.repository_id = repositories.id
             WHERE crates.name = $1 AND releases.version = $2;";
 
         let rows = conn.query(query, &[&name, &version]).unwrap();

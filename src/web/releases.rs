@@ -84,7 +84,7 @@ pub(crate) fn get_releases(conn: &mut Client, page: i64, limit: i64, order: Orde
             repositories.stars
         FROM crates
         INNER JOIN releases ON crates.latest_version_id = releases.id
-        LEFT JOIN repositories ON releases.repository = repositories.id
+        LEFT JOIN repositories ON releases.repository_id = repositories.id
         WHERE
             ((NOT $3) OR (releases.build_status = FALSE AND releases.is_library = TRUE)) 
             AND {0} IS NOT NULL
@@ -130,7 +130,7 @@ fn get_releases_by_author(
         INNER JOIN releases ON releases.id = crates.latest_version_id
         INNER JOIN author_rels ON releases.id = author_rels.rid
         INNER JOIN authors ON authors.id = author_rels.aid
-        LEFT JOIN repositories ON releases.repository = repositories.id
+        LEFT JOIN repositories ON releases.repository_id = repositories.id
         WHERE authors.slug = $1
         ORDER BY repositories.stars DESC NULLS LAST
         LIMIT $2 OFFSET $3";
@@ -180,7 +180,7 @@ fn get_releases_by_owner(
                  INNER JOIN releases ON releases.id = crates.latest_version_id
                  INNER JOIN owner_rels ON owner_rels.cid = crates.id
                  INNER JOIN owners ON owners.id = owner_rels.oid
-                 LEFT JOIN repositories ON releases.repository = repositories.id
+                 LEFT JOIN repositories ON releases.repository_id = repositories.id
                  WHERE owners.login = $1
                  ORDER BY repositories.stars DESC NULLS LAST
                  LIMIT $2 OFFSET $3";
@@ -261,7 +261,7 @@ fn get_search_results(
             WHERE releases.rank = 1
         ) AS latest_release ON latest_release.crate_id = crates.id
         INNER JOIN releases ON latest_release.id = releases.id
-        LEFT JOIN repositories ON releases.repository = repositories.id
+        LEFT JOIN repositories ON releases.repository_id = repositories.id
         WHERE
             ((char_length($1)::float - levenshtein(crates.name, $1)::float) / char_length($1)::float) >= 0.65
             OR crates.name ILIKE CONCAT('%', $1, '%')
@@ -523,7 +523,7 @@ fn redirect_to_random_crate(req: &Request, conn: &mut PoolClient) -> IronResult<
                 ) AS r
                 INNER JOIN crates ON r.id = crates.id
                 INNER JOIN releases ON crates.latest_version_id = releases.id
-                INNER JOIN repositories ON releases.repository = repositories.id
+                INNER JOIN repositories ON releases.repository_id = repositories.id
                 WHERE
                     releases.rustdoc_status = TRUE AND
                     repositories.stars >= 100

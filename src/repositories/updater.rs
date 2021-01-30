@@ -90,7 +90,7 @@ pub trait Updater {
                 "SELECT releases.id, crates.name, releases.version, releases.repository_url
                  FROM releases
                  INNER JOIN crates ON (crates.id = releases.crate_id)
-                 WHERE repository IS NULL AND repository_url LIKE $1;",
+                 WHERE repository_id IS NULL AND repository_url LIKE $1;",
                 &[&format!("%{}%", host)],
             )?;
 
@@ -105,7 +105,7 @@ pub trait Updater {
                     debug!("{} {} points to a known missing repo", name, version);
                 } else if let Some(node_id) = self.load_repository(&mut conn, &url)? {
                     conn.execute(
-                        "UPDATE releases SET repository = $1 WHERE id = $2;",
+                        "UPDATE releases SET repository_id = $1 WHERE id = $2;",
                         &[&node_id, &id],
                     )?;
                     info!(
