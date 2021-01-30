@@ -8,6 +8,7 @@ use reqwest::{
     header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT},
 };
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::repositories::{Updater, APP_USER_AGENT};
@@ -108,7 +109,6 @@ impl Updater for GitlabUpdater {
         } else {
             // When an ID isn't found, gitlab doesn't return an error, it returns a `project` with
             // `null` as value.
-            self.delete_repository(conn, &project_path, url)?;
             Ok(None)
         }
     }
@@ -179,13 +179,11 @@ impl GitlabUpdater {
                 "ids": node_ids,
             }),
         )?;
+        // When gitlab doesn't find an ID, it simply doesn't list it. So we need to actually check
+        // which nodes remain at the end to delete their DB entry.
+        let mut node_ids: HashSet<&str> = node_ids.iter().map(|s| s.as_str()).collect();
 
-        // The error is returned *before* we reach the rate limit, to ensure we always have an
-        // amount of API calls we can make at any time.
         if let Some(data) = response.data {
-            // When a node is missing (for example if the repository was deleted or made private) the
-            // GraphQL API will return *both* a `null` instead of the data in the nodes list and a
-            // `NOT_FOUND` error in the errors list.
             for node in &data.projects.nodes {
                 if let Some(node) = node {
                     self.store_repository(
@@ -199,10 +197,16 @@ impl GitlabUpdater {
                         node.forks_count,
                         node.open_issues_count.unwrap_or(0),
                     )?;
+                    node_ids.remove(&node.id.as_str());
                 }
             }
             if !response.errors.is_empty() {
                 failure::bail!("error updating repositories: {:?}", response.errors);
+            }
+
+            // Those nodes were not returned by gitlab, meaning they don't exist (anymore?).
+            for node in node_ids {
+                self.delete_repository(conn, node, host)?;
             }
 
             Ok(())

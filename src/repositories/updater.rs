@@ -168,7 +168,6 @@ impl RepositoryStatsUpdater {
             };
         }
 
-        // The `GitlabUpdater is a bit more permissive so better to put it at the end.
         return_if_ok_some!(GithubUpdater);
         return_if_ok_some!(GitlabUpdater);
         Ok(None)
