@@ -101,7 +101,7 @@ impl Updater for GitlabUpdater {
                 &repo.last_activity_at,
                 repo.star_count,
                 repo.forks_count,
-                repo.open_issues_count,
+                repo.open_issues_count.unwrap_or(0),
             )?))
         } else if let Some(error) = response.errors.get(0) {
             failure::bail!("error loading repository: {}", error.message)
@@ -195,7 +195,7 @@ impl GitlabUpdater {
                         &node.last_activity_at,
                         node.star_count,
                         node.forks_count,
-                        node.open_issues_count,
+                        node.open_issues_count.unwrap_or(0),
                     )?;
                 }
             }
@@ -281,7 +281,7 @@ struct GraphProject {
     description: Option<String>,
     star_count: i64,
     forks_count: i64,
-    open_issues_count: i64,
+    open_issues_count: Option<i64>,
 }
 
 #[cfg(test)]
