@@ -1,5 +1,5 @@
 use super::{match_version, redirect_base, render_markdown, MatchSemver, MetaData};
-use crate::{db::Pool, impl_webpage, web::page::WebPage};
+use crate::{db::Pool, impl_webpage, repositories::get_icon_name, web::page::WebPage};
 use chrono::{DateTime, Utc};
 use iron::prelude::*;
 use iron::Url;
@@ -140,7 +140,7 @@ impl CrateDetails {
                 stars: krate.get("repo_stars"),
                 forks: krate.get("repo_forks"),
                 name: krate.get("repo_name"),
-                icon: if host == "github" { "github" } else { "gitlab" },
+                icon: get_icon_name(&host),
             })
         } else {
             None

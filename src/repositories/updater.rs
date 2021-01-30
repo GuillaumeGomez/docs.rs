@@ -266,3 +266,11 @@ pub struct RepositoryName<'a> {
     pub repo: &'a str,
     pub host: &'a str,
 }
+
+pub fn get_icon_name(host: &str) -> &'static str {
+    if GithubUpdater::hosts().iter().any(|&h| h == host) {
+        "github"
+    } else {
+        "gitlab"
+    }
+}
