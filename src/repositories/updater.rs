@@ -267,9 +267,15 @@ pub struct RepositoryName<'a> {
 }
 
 pub fn get_icon_name(host: &str) -> &'static str {
-    if GithubUpdater::hosts().iter().any(|&h| h == host) {
-        "github"
-    } else {
-        "gitlab"
+    macro_rules! return_if_true {
+        ($t:ty, $icon:expr) => {
+            if <$t>::hosts().iter().any(|&h| h == host) {
+                return $icon;
+            }
+        };
     }
+
+    return_if_true!(GithubUpdater, "github");
+    return_if_true!(GitlabUpdater, "gitlab");
+    ""
 }
