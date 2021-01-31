@@ -78,7 +78,7 @@ pub fn start_daemon(context: &dyn Context, enable_registry_watcher: bool) -> Res
         })
         .unwrap();
 
-    RepositoryStatsUpdater::start_crons(config, context)?;
+    RepositoryStatsUpdater::start_crons(config, context.pool()?)?;
 
     // Never returns; `server` blocks indefinitely when dropped
     // NOTE: if a failure occurred earlier in `start_daemon`, the server will _not_ be joined -

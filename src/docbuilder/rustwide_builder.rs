@@ -699,12 +699,7 @@ impl RustwideBuilder {
     }
 
     fn get_repo(&self, conn: &mut Client, metadata: &MetadataPackage) -> Result<Option<i32>> {
-        RepositoryStatsUpdater::load_repository(
-            conn,
-            metadata,
-            self.config.clone(),
-            self.db.clone(),
-        )
+        RepositoryStatsUpdater::load_repository(conn, metadata, self.config.clone())
     }
 }
 

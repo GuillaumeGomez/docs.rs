@@ -7,51 +7,233 @@ use log::{debug, info, trace, warn};
 use once_cell::sync::Lazy;
 use postgres::Client;
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub trait Updater {
-    fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>>
-    where
-        Self: Sized;
-    fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>>;
-    fn update_all_crates(&self) -> Result<()>;
-    fn name() -> &'static str;
-    fn hosts() -> &'static [&'static str];
-    fn pool(&self) -> &Pool;
+pub trait RepositoryForge {
+    /// Result used both as the `host` column in the DB and to match repository URLs during
+    /// backfill.
+    fn host(&self) -> &str;
 
-    fn delete_repository(&self, conn: &mut Client, host_id: &str, host: &str) -> Result<()> {
-        trace!(
-            "removing {} repository stats for host ID `{}` and host `{}`",
-            Self::name(),
-            host_id,
-            host
-        );
-        conn.execute(
-            "DELETE FROM repositories WHERE host_id = $1 AND host = $2;",
-            &[&host_id, &host],
+    /// FontAwesome icon used in the front-end.
+    fn icon(&self) -> &str;
+
+    /// How many items we can query in one graphql request.
+    fn chunk_size(&self) -> usize;
+
+    /// Used by both backfill_repositories and load_repository. When the repository is missing
+    /// `None` is returned.
+    fn fetch_repository(&self, name: &RepositoryName) -> Result<Option<Repository>>;
+
+    /// Used by update_all_crates.
+    ///
+    /// The returned struct will contain all the information needed for `RepositoriesUpdater` to
+    /// update repositories that are still present and delete the missing ones.
+    fn fetch_repositories(&self, ids: &[String]) -> Result<FetchRepositoriesResult>;
+}
+
+pub struct Repository {
+    pub id: String,
+    pub name_with_owner: String,
+    pub description: Option<String>,
+    pub last_activity_at: Option<DateTime<Utc>>,
+    pub stars: i64,
+    pub forks: i64,
+    pub issues: i64,
+}
+
+#[derive(Default)]
+pub struct FetchRepositoriesResult {
+    pub present: HashMap<String, Repository>,
+    pub missing: Vec<String>,
+}
+
+pub struct RepositoryStatsUpdater;
+
+impl RepositoryStatsUpdater {
+    fn get_updaters(config: &Arc<Config>) -> Vec<Box<dyn RepositoryForge>> {
+        let mut updaters: Vec<Box<dyn RepositoryForge>> = Vec::with_capacity(3);
+        if let Ok(Some(updater)) = GitHub::new(&config) {
+            updaters.push(Box::new(updater));
+        }
+        if let Ok(Some(updater)) = GitLab::new("gitlab.com", &config.gitlab_accesstoken) {
+            updaters.push(Box::new(updater));
+        }
+        if let Ok(Some(updater)) = GitLab::new("gitlab.freedesktop.org", &None) {
+            updaters.push(Box::new(updater));
+        }
+        updaters
+    }
+}
+
+impl RepositoryStatsUpdater {
+    pub(crate) fn load_repository(
+        conn: &mut Client,
+        metadata: &MetadataPackage,
+        config: Arc<Config>,
+    ) -> Result<Option<i32>> {
+        let url = match &metadata.repository {
+            Some(url) => url,
+            None => {
+                debug!("did not collect stats as no repository URL was present");
+                return Ok(None);
+            }
+        };
+        let updaters = Self::get_updaters(&config);
+
+        Self::load_repository_inner(conn, url, &updaters)
+    }
+
+    fn load_repository_inner(
+        conn: &mut Client,
+        url: &str,
+        updaters: &[Box<dyn RepositoryForge>],
+    ) -> Result<Option<i32>> {
+        let name = match repository_name(url) {
+            Some(name) => name,
+            None => return Ok(None),
+        };
+
+        // Avoid querying the APIs for repositories we already loaded.
+        if let Some(row) = conn.query_opt(
+            "SELECT id FROM repositories WHERE name = $1 AND host = $2 LIMIT 1;",
+            &[&format!("{}/{}", name.owner, name.repo), &name.host],
+        )? {
+            return Ok(Some(row.get("id")));
+        }
+        for updater in updaters.iter().filter(|u| u.host() == name.host) {
+            let res = match updater.fetch_repository(&name) {
+                Ok(Some(repo)) => Self::store_repository(conn, updater.host(), repo),
+                Err(err) => {
+                    warn!("failed to collect `{}` stats: {}", updater.host(), err);
+                    return Ok(None);
+                }
+                _ => continue,
+            };
+            return match res {
+                Ok(repo_id) => Ok(Some(repo_id)),
+                Err(err) => {
+                    warn!("failed to collect `{}` stats: {}", updater.host(), err);
+                    Ok(None)
+                }
+            };
+        }
+        // It means that none of our updaters have a matching host.
+        Ok(None)
+    }
+
+    pub fn start_crons(config: Arc<Config>, pool: Pool) -> Result<()> {
+        cron(
+            "repositories stats updater",
+            Duration::from_secs(60 * 60),
+            move || {
+                Self::update_all_crates(&config, &pool)?;
+                Ok(())
+            },
         )?;
+
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn store_repository(
-        &self,
-        conn: &mut Client,
-        host: &str,
-        repo_id: &str,
-        name_with_owner: &str,
-        description: &Option<String>,
-        last_activity_at: &Option<DateTime<Utc>>,
-        star_count: i64,
-        fork_count: i64,
-        open_issues_count: i64,
-    ) -> Result<i32> {
+    pub fn update_all_crates(config: &Arc<Config>, pool: &Pool) -> Result<()> {
+        let mut conn = pool.get()?;
+        let updaters = Self::get_updaters(config);
+        for updater in updaters {
+            info!("started updating `{}` repositories stats", updater.host());
+
+            let needs_update = conn
+                .query(
+                    "SELECT host_id
+                     FROM repositories
+                     WHERE host = $1 AND updated_at < NOW() - INTERVAL '1 day';",
+                    &[&updater.host()],
+                )?
+                .into_iter()
+                .map(|row| row.get(0))
+                .collect::<Vec<String>>();
+
+            if needs_update.is_empty() {
+                info!(
+                    "no `{}` repositories stats needed to be updated",
+                    updater.host()
+                );
+                continue;
+            }
+            for chunk in needs_update.chunks(updater.chunk_size()) {
+                let res = updater.fetch_repositories(chunk)?;
+                for node in res.missing {
+                    Self::delete_repository(&mut conn, &node, updater.host())?;
+                }
+                for (_, repo) in res.present {
+                    Self::store_repository(&mut conn, updater.host(), repo)?;
+                }
+            }
+            info!("finished updating `{}` repositories stats", updater.host());
+        }
+        Ok(())
+    }
+
+    pub fn backfill_repositories(ctx: &dyn Context) -> Result<()> {
+        let pool = ctx.pool()?;
+        let mut conn = pool.get()?;
+        let updaters = Self::get_updaters(&ctx.config()?);
+        for updater in updaters.iter() {
+            info!(
+                "started backfilling `{}` repositories stats",
+                updater.host()
+            );
+
+            let needs_backfilling = conn.query(
+                "SELECT releases.id, crates.name, releases.version, releases.repository_url
+                 FROM releases
+                 INNER JOIN crates ON (crates.id = releases.crate_id)
+                 WHERE repository_id IS NULL AND repository_url LIKE $1;",
+                &[&format!("%{}%", updater.host())],
+            )?;
+
+            let mut missing_urls = HashSet::new();
+            for row in &needs_backfilling {
+                let id: i32 = row.get("id");
+                let name: String = row.get("name");
+                let version: String = row.get("version");
+                let url: String = row.get("repository_url");
+
+                if missing_urls.contains(&url) {
+                    debug!("{} {} points to a known missing repo", name, version);
+                } else if let Some(node_id) =
+                    Self::load_repository_inner(&mut conn, &url, &updaters)?
+                {
+                    conn.execute(
+                        "UPDATE releases SET repository_id = $1 WHERE id = $2;",
+                        &[&node_id, &id],
+                    )?;
+                    info!(
+                        "backfilled `{}` repositories for {} {}",
+                        updater.host(),
+                        name,
+                        version,
+                    );
+                } else {
+                    debug!(
+                        "{} {} does not point to a {} repository",
+                        name,
+                        version,
+                        updater.host(),
+                    );
+                    missing_urls.insert(url);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn store_repository(conn: &mut Client, host: &str, repo: Repository) -> Result<i32> {
         trace!(
             "storing {} repository stats for {}",
-            Self::name(),
-            name_with_owner,
+            host,
+            repo.name_with_owner,
         );
         let data = conn.query_one(
             "INSERT INTO repositories (
@@ -69,194 +251,46 @@ pub trait Updater {
              RETURNING id;",
             &[
                 &host,
-                &repo_id,
-                &name_with_owner,
-                &description,
-                &last_activity_at,
-                &(star_count as i32),
-                &(fork_count as i32),
-                &(open_issues_count as i32),
+                &repo.id,
+                &repo.name_with_owner,
+                &repo.description,
+                &repo.last_activity_at,
+                &(repo.stars as i32),
+                &(repo.forks as i32),
+                &(repo.issues as i32),
             ],
         )?;
         Ok(data.get(0))
     }
 
-    fn backfill_repositories(&self) -> Result<()> {
-        info!("started backfilling {} repository stats", Self::name());
-
-        let mut conn = self.pool().get()?;
-        for host in Self::hosts() {
-            let needs_backfilling = conn.query(
-                "SELECT releases.id, crates.name, releases.version, releases.repository_url
-                 FROM releases
-                 INNER JOIN crates ON (crates.id = releases.crate_id)
-                 WHERE repository_id IS NULL AND repository_url LIKE $1;",
-                &[&format!("%{}%", host)],
-            )?;
-
-            let mut missing_urls = HashSet::new();
-            for row in &needs_backfilling {
-                let id: i32 = row.get("id");
-                let name: String = row.get("name");
-                let version: String = row.get("version");
-                let url: String = row.get("repository_url");
-
-                if missing_urls.contains(&url) {
-                    debug!("{} {} points to a known missing repo", name, version);
-                } else if let Some(node_id) = self.load_repository(&mut conn, &url)? {
-                    conn.execute(
-                        "UPDATE releases SET repository_id = $1 WHERE id = $2;",
-                        &[&node_id, &id],
-                    )?;
-                    info!(
-                        "backfilled {} repository for {} {}",
-                        Self::name(),
-                        name,
-                        version
-                    );
-                } else {
-                    debug!(
-                        "{} {} does not point to a {} repository",
-                        Self::name(),
-                        name,
-                        version
-                    );
-                    missing_urls.insert(url);
-                }
-            }
-        }
-
+    fn delete_repository(conn: &mut Client, host_id: &str, host: &str) -> Result<()> {
+        trace!(
+            "removing repository stats for host ID `{}` and host `{}`",
+            host_id,
+            host
+        );
+        conn.execute(
+            "DELETE FROM repositories WHERE host_id = $1 AND host = $2;",
+            &[&host_id, &host],
+        )?;
         Ok(())
-    }
-
-    fn repository_name(url: &str) -> Option<RepositoryName> {
-        static RE: Lazy<Regex> = Lazy::new(|| {
-            Regex::new(r"https?://(?P<host>.+)/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)").unwrap()
-        });
-
-        let cap = RE.captures(url)?;
-        let host = cap.name("host").expect("missing group 'host'").as_str();
-        if !Self::hosts().iter().any(|s| *s == host) {
-            return None;
-        }
-        let owner = cap.name("owner").expect("missing group 'owner'").as_str();
-        let repo = cap.name("repo").expect("missing group 'repo'").as_str();
-        Some(RepositoryName {
-            owner,
-            repo: repo.strip_suffix(".git").unwrap_or(repo),
-            host,
-        })
     }
 }
 
-pub struct RepositoryStatsUpdater;
+fn repository_name(url: &str) -> Option<RepositoryName> {
+    static RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"https?://(?P<host>.+)/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)").unwrap()
+    });
 
-impl RepositoryStatsUpdater {
-    pub(crate) fn load_repository(
-        conn: &mut Client,
-        metadata: &MetadataPackage,
-        config: Arc<Config>,
-        db: Pool,
-    ) -> Result<Option<i32>> {
-        macro_rules! return_if_ok_some {
-            ($typ:ty) => {
-                let data =
-                    Self::load_repository_inner::<$typ>(conn, metadata, config.clone(), db.clone());
-                if matches!(data, Ok(Some(_))) {
-                    return data;
-                }
-            };
-        }
-
-        return_if_ok_some!(GitHub);
-        return_if_ok_some!(GitLab);
-        Ok(None)
-    }
-
-    fn load_repository_inner<T: Updater>(
-        conn: &mut Client,
-        metadata: &MetadataPackage,
-        config: Arc<Config>,
-        db: Pool,
-    ) -> Result<Option<i32>> {
-        let updater = match T::new(config, db)? {
-            Some(updater) => updater,
-            None => {
-                return Ok(None);
-            }
-        };
-        let repo = match &metadata.repository {
-            Some(url) => url,
-            None => {
-                debug!(
-                    "did not collect {} stats as no repository URL was present",
-                    T::name()
-                );
-                return Ok(None);
-            }
-        };
-        match updater.load_repository(conn, repo) {
-            Ok(repo) => Ok(repo),
-            Err(err) => {
-                warn!("failed to collect {} stats: {}", T::name(), err);
-                Ok(None)
-            }
-        }
-    }
-
-    pub fn start_crons(config: Arc<Config>, context: &dyn Context) -> Result<()> {
-        macro_rules! start_cron {
-            ($typ:ty) => {
-                if let Some(updater) = <$typ>::new(config.clone(), context.pool()?)? {
-                    cron(
-                        concat!(stringify!($typ), " stats updater"),
-                        Duration::from_secs(60 * 60),
-                        move || {
-                            updater.update_all_crates()?;
-                            Ok(())
-                        },
-                    )?;
-                } else {
-                    log::warn!(
-                        "{} stats updater not started as no token was provided",
-                        <$typ>::name()
-                    );
-                }
-            };
-        }
-
-        start_cron!(GitHub);
-        start_cron!(GitLab);
-        Ok(())
-    }
-
-    pub fn update_all_crates(ctx: &dyn Context) -> Result<()> {
-        fn inner<T: Updater>(ctx: &dyn Context) -> Result<()> {
-            match T::new(ctx.config()?, ctx.pool()?)? {
-                Some(up) => up.update_all_crates()?,
-                None => warn!("missing {} token", T::name()),
-            }
-            Ok(())
-        }
-
-        inner::<GitHub>(ctx)?;
-        inner::<GitLab>(ctx)?;
-        Ok(())
-    }
-
-    pub fn backfill_repositories(ctx: &dyn Context) -> Result<()> {
-        fn inner<T: Updater>(ctx: &dyn Context) -> Result<()> {
-            match T::new(ctx.config()?, ctx.pool()?)? {
-                Some(up) => up.backfill_repositories()?,
-                None => warn!("missing {} token", T::name()),
-            }
-            Ok(())
-        }
-
-        inner::<GitHub>(ctx)?;
-        inner::<GitLab>(ctx)?;
-        Ok(())
-    }
+    let cap = RE.captures(url)?;
+    let host = cap.name("host").expect("missing group 'host'").as_str();
+    let owner = cap.name("owner").expect("missing group 'owner'").as_str();
+    let repo = cap.name("repo").expect("missing group 'repo'").as_str();
+    Some(RepositoryName {
+        owner,
+        repo: repo.strip_suffix(".git").unwrap_or(repo),
+        host,
+    })
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -267,15 +301,65 @@ pub struct RepositoryName<'a> {
 }
 
 pub fn get_icon_name(host: &str) -> &'static str {
-    macro_rules! return_if_true {
-        ($t:ty, $icon:expr) => {
-            if <$t>::hosts().iter().any(|&h| h == host) {
-                return $icon;
-            }
-        };
-    }
+    // macro_rules! return_if_true {
+    //     ($t:ty, $icon:expr) => {
+    //         if <$t>::hosts().iter().any(|&h| h == host) {
+    //             return $icon;
+    //         }
+    //     };
+    // }
 
-    return_if_true!(GitHub, "github");
-    return_if_true!(GitLab, "gitlab");
+    // return_if_true!(GitHub, "github");
+    // return_if_true!(GitLab, "gitlab");
     ""
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_repository_name() {
+        macro_rules! assert_name {
+            ($url:expr => ($owner:expr, $repo:expr, $host:expr)) => {
+                assert_eq!(
+                    repository_name($url),
+                    Some(RepositoryName {
+                        owner: $owner,
+                        repo: $repo,
+                        host: $host,
+                    })
+                );
+            };
+            ($url:expr => None) => {
+                assert_eq!(repository_name($url), None);
+            };
+        }
+
+        // gitlab checks
+        assert_name!("https://gitlab.com/onur/cratesfyi" => ("onur", "cratesfyi", "gitlab.com"));
+        assert_name!("http://gitlab.com/onur/cratesfyi" => ("onur", "cratesfyi", "gitlab.com"));
+        assert_name!("https://gitlab.com/onur/cratesfyi.git" => ("onur", "cratesfyi", "gitlab.com"));
+        assert_name!("https://gitlab.com/docopt/docopt.rs" => ("docopt", "docopt.rs", "gitlab.com"));
+        assert_name!("https://gitlab.com/onur23cmD_M_R_L_/crates_fy-i" => (
+            "onur23cmD_M_R_L_", "crates_fy-i", "gitlab.com"
+        ));
+        assert_name!("https://gitlab.freedesktop.org/test/test" => (
+            "test", "test", "gitlab.freedesktop.org"
+        ));
+        assert_name!("https://www.github.com/onur/cratesfyi" => None);
+        assert_name!("https://github.com/onur/cratesfyi" => None);
+
+        // github checks
+        assert_name!("https://github.com/onur/cratesfyi" => ("onur", "cratesfyi", "github.com"));
+        assert_name!("http://github.com/onur/cratesfyi" => ("onur", "cratesfyi", "github.com"));
+        assert_name!("https://github.com/onur/cratesfyi.git" => ("onur", "cratesfyi", "github.com"));
+        assert_name!("https://github.com/docopt/docopt.rs" => ("docopt", "docopt.rs", "github.com"));
+        assert_name!("https://github.com/onur23cmD_M_R_L_/crates_fy-i" => (
+            "onur23cmD_M_R_L_", "crates_fy-i", "github.com"
+        ));
+        assert_name!("https://www.github.com/onur/cratesfyi" => None);
+        assert_name!("http://www.github.com/onur/cratesfyi" => None);
+        assert_name!("http://www.gitlab.com/onur/cratesfyi" => None);
+    }
 }

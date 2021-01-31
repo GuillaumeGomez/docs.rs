@@ -423,7 +423,7 @@ impl DatabaseSubcommand {
             }
 
             Self::UpdateRepositoryFields => {
-                RepositoryStatsUpdater::update_all_crates(&ctx)?;
+                RepositoryStatsUpdater::update_all_crates(&ctx.config()?, &ctx.pool()?)?;
             }
 
             Self::BackfillRepositoryStats => {
