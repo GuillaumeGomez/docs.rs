@@ -423,11 +423,15 @@ impl DatabaseSubcommand {
             }
 
             Self::UpdateRepositoryFields => {
-                RepositoryStatsUpdater::update_all_crates(&ctx.config()?, &ctx.pool()?)?;
+                let config = ctx.config()?;
+                let updater = RepositoryStatsUpdater::new(&config);
+                updater.update_all_crates(&ctx.pool()?)?;
             }
 
             Self::BackfillRepositoryStats => {
-                RepositoryStatsUpdater::backfill_repositories(&ctx)?;
+                let config = ctx.config()?;
+                let updater = RepositoryStatsUpdater::new(&config);
+                updater.backfill_repositories(&ctx)?;
             }
 
             Self::UpdateCrateRegistryFields { name } => {
@@ -532,6 +536,7 @@ struct BinContext {
     pool: OnceCell<Pool>,
     metrics: OnceCell<Arc<Metrics>>,
     index: OnceCell<Arc<Index>>,
+    repository_stats_updater: OnceCell<Arc<RepositoryStatsUpdater>>,
 }
 
 impl BinContext {
@@ -543,6 +548,7 @@ impl BinContext {
             pool: OnceCell::new(),
             metrics: OnceCell::new(),
             index: OnceCell::new(),
+            repository_stats_updater: OnceCell::new(),
         }
     }
 
@@ -611,6 +617,16 @@ impl Context for BinContext {
                         Index::new(config.registry_index_path.clone())
                     }?,
                 ))
+            })?
+            .clone())
+    }
+
+    fn repository_stats_updater(&self) -> Result<Arc<RepositoryStatsUpdater>, Error> {
+        Ok(self
+            .repository_stats_updater
+            .get_or_try_init::<_, Error>(|| {
+                let config = self.config()?;
+                Ok(Arc::new(RepositoryStatsUpdater::new(&config)))
             })?
             .clone())
     }

@@ -1,5 +1,5 @@
 use super::{match_version, redirect_base, render_markdown, MatchSemver, MetaData};
-use crate::{db::Pool, impl_webpage, repositories::get_icon_name, web::page::WebPage};
+use crate::{db::Pool, impl_webpage, repositories::RepositoryStatsUpdater, web::page::WebPage};
 use chrono::{DateTime, Utc};
 use iron::prelude::*;
 use iron::Url;
@@ -78,7 +78,12 @@ pub struct Release {
 }
 
 impl CrateDetails {
-    pub fn new(conn: &mut Client, name: &str, version: &str) -> Option<CrateDetails> {
+    pub fn new(
+        conn: &mut Client,
+        name: &str,
+        version: &str,
+        up: &RepositoryStatsUpdater,
+    ) -> Option<CrateDetails> {
         // get all stuff, I love you rustfmt
         let query = "
             SELECT
@@ -140,7 +145,7 @@ impl CrateDetails {
                 stars: krate.get("repo_stars"),
                 forks: krate.get("repo_forks"),
                 name: krate.get("repo_name"),
-                icon: get_icon_name(&host),
+                icon: up.get_icon_name(&host),
             })
         } else {
             None
@@ -301,7 +306,8 @@ pub fn crate_details_handler(req: &mut Request) -> IronResult<Response> {
 
     match match_version(&mut conn, &name, req_version).and_then(|m| m.assume_exact())? {
         MatchSemver::Exact((version, _)) => {
-            let details = cexpect!(req, CrateDetails::new(&mut conn, &name, &version));
+            let updater = extension!(req, RepositoryStatsUpdater);
+            let details = cexpect!(req, CrateDetails::new(&mut conn, &name, &version, &updater));
 
             CrateDetailsPage { details }.into_response(req)
         }
@@ -337,8 +343,13 @@ mod tests {
         version: &str,
         expected_last_successful_build: Option<&str>,
     ) -> Result<(), Error> {
-        let details = CrateDetails::new(&mut db.conn(), package, version)
-            .ok_or_else(|| failure::err_msg("could not fetch crate details"))?;
+        let details = CrateDetails::new(
+            &mut db.conn(),
+            package,
+            version,
+            &db.repository_stats_updater(),
+        )
+        .ok_or_else(|| failure::err_msg("could not fetch crate details"))?;
 
         assert_eq!(
             details.last_successful_build,
@@ -465,7 +476,13 @@ mod tests {
                 .binary(true)
                 .create()?;
 
-            let details = CrateDetails::new(&mut db.conn(), "foo", "0.2.0").unwrap();
+            let details = CrateDetails::new(
+                &mut db.conn(),
+                "foo",
+                "0.2.0",
+                &db.repository_stats_updater(),
+            )
+            .unwrap();
             assert_eq!(
                 details.releases,
                 vec![
@@ -534,7 +551,13 @@ mod tests {
             env.fake_release().name("foo").version("0.0.2").create()?;
 
             for version in &["0.0.1", "0.0.2", "0.0.3"] {
-                let details = CrateDetails::new(&mut db.conn(), "foo", version).unwrap();
+                let details = CrateDetails::new(
+                    &mut db.conn(),
+                    "foo",
+                    version,
+                    &db.repository_stats_updater(),
+                )
+                .unwrap();
                 assert_eq!(
                     details.latest_release().version,
                     semver::Version::parse("0.0.3")?
@@ -558,7 +581,13 @@ mod tests {
             env.fake_release().name("foo").version("0.0.2").create()?;
 
             for version in &["0.0.1", "0.0.2", "0.0.3-pre.1"] {
-                let details = CrateDetails::new(&mut db.conn(), "foo", version).unwrap();
+                let details = CrateDetails::new(
+                    &mut db.conn(),
+                    "foo",
+                    version,
+                    &db.repository_stats_updater(),
+                )
+                .unwrap();
                 assert_eq!(
                     details.latest_release().version,
                     semver::Version::parse("0.0.2")?
@@ -583,7 +612,13 @@ mod tests {
             env.fake_release().name("foo").version("0.0.2").create()?;
 
             for version in &["0.0.1", "0.0.2", "0.0.3"] {
-                let details = CrateDetails::new(&mut db.conn(), "foo", version).unwrap();
+                let details = CrateDetails::new(
+                    &mut db.conn(),
+                    "foo",
+                    version,
+                    &db.repository_stats_updater(),
+                )
+                .unwrap();
                 assert_eq!(
                     details.latest_release().version,
                     semver::Version::parse("0.0.2")?
@@ -616,7 +651,13 @@ mod tests {
                 .create()?;
 
             for version in &["0.0.1", "0.0.2", "0.0.3"] {
-                let details = CrateDetails::new(&mut db.conn(), "foo", version).unwrap();
+                let details = CrateDetails::new(
+                    &mut db.conn(),
+                    "foo",
+                    version,
+                    &db.repository_stats_updater(),
+                )
+                .unwrap();
                 assert_eq!(
                     details.latest_release().version,
                     semver::Version::parse("0.0.3")?
@@ -672,7 +713,13 @@ mod tests {
                 })
                 .create()?;
 
-            let details = CrateDetails::new(&mut db.conn(), "foo", "0.0.1").unwrap();
+            let details = CrateDetails::new(
+                &mut db.conn(),
+                "foo",
+                "0.0.1",
+                &db.repository_stats_updater(),
+            )
+            .unwrap();
             assert_eq!(
                 details.owners,
                 vec![("foobar".into(), "https://example.org/foobar".into())]
@@ -696,7 +743,13 @@ mod tests {
                 })
                 .create()?;
 
-            let details = CrateDetails::new(&mut db.conn(), "foo", "0.0.1").unwrap();
+            let details = CrateDetails::new(
+                &mut db.conn(),
+                "foo",
+                "0.0.1",
+                &db.repository_stats_updater(),
+            )
+            .unwrap();
             let mut owners = details.owners;
             owners.sort();
             assert_eq!(
@@ -719,7 +772,13 @@ mod tests {
                 })
                 .create()?;
 
-            let details = CrateDetails::new(&mut db.conn(), "foo", "0.0.1").unwrap();
+            let details = CrateDetails::new(
+                &mut db.conn(),
+                "foo",
+                "0.0.1",
+                &db.repository_stats_updater(),
+            )
+            .unwrap();
             assert_eq!(
                 details.owners,
                 vec![("barfoo".into(), "https://example.org/barfoo".into())]
@@ -737,7 +796,13 @@ mod tests {
                 })
                 .create()?;
 
-            let details = CrateDetails::new(&mut db.conn(), "foo", "0.0.1").unwrap();
+            let details = CrateDetails::new(
+                &mut db.conn(),
+                "foo",
+                "0.0.1",
+                &db.repository_stats_updater(),
+            )
+            .unwrap();
             assert_eq!(
                 details.owners,
                 vec![("barfoo".into(), "https://example.org/barfoov2".into())]

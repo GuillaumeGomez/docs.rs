@@ -76,6 +76,7 @@ pub struct RustwideBuilder {
     metrics: Arc<Metrics>,
     index: Arc<Index>,
     rustc_version: String,
+    repository_stats_updater: Arc<RepositoryStatsUpdater>,
     skip_build_if_exists: bool,
 }
 
@@ -103,6 +104,7 @@ impl RustwideBuilder {
             metrics: context.metrics()?,
             index: context.index()?,
             rustc_version: String::new(),
+            repository_stats_updater: context.repository_stats_updater()?,
             skip_build_if_exists: false,
         })
     }
@@ -699,7 +701,8 @@ impl RustwideBuilder {
     }
 
     fn get_repo(&self, conn: &mut Client, metadata: &MetadataPackage) -> Result<Option<i32>> {
-        RepositoryStatsUpdater::load_repository(conn, metadata, self.config.clone())
+        self.repository_stats_updater
+            .load_repository(conn, metadata)
     }
 }
 

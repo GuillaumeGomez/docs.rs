@@ -8,6 +8,7 @@ use once_cell::sync::Lazy;
 use postgres::Client;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ pub trait RepositoryForge {
     fn host(&self) -> &str;
 
     /// FontAwesome icon used in the front-end.
-    fn icon(&self) -> &str;
+    fn icon(&self) -> &'static str;
 
     /// How many items we can query in one graphql request.
     fn chunk_size(&self) -> usize;
@@ -49,11 +50,23 @@ pub struct FetchRepositoriesResult {
     pub missing: Vec<String>,
 }
 
-pub struct RepositoryStatsUpdater;
+pub struct RepositoryStatsUpdater {
+    updaters: Vec<Box<dyn RepositoryForge + Send + Sync>>,
+}
+
+impl fmt::Debug for RepositoryStatsUpdater {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "RepositoryStatsUpdater {{ {:?} }}",
+            self.updaters.iter().map(|u| u.host()).collect::<Vec<_>>()
+        )
+    }
+}
 
 impl RepositoryStatsUpdater {
-    fn get_updaters(config: &Arc<Config>) -> Vec<Box<dyn RepositoryForge>> {
-        let mut updaters: Vec<Box<dyn RepositoryForge>> = Vec::with_capacity(3);
+    pub fn new(config: &Config) -> Self {
+        let mut updaters: Vec<Box<dyn RepositoryForge + Send + Sync>> = Vec::with_capacity(3);
         if let Ok(Some(updater)) = GitHub::new(&config) {
             updaters.push(Box::new(updater));
         }
@@ -63,15 +76,13 @@ impl RepositoryStatsUpdater {
         if let Ok(Some(updater)) = GitLab::new("gitlab.freedesktop.org", &None) {
             updaters.push(Box::new(updater));
         }
-        updaters
+        Self { updaters }
     }
-}
 
-impl RepositoryStatsUpdater {
     pub(crate) fn load_repository(
+        &self,
         conn: &mut Client,
         metadata: &MetadataPackage,
-        config: Arc<Config>,
     ) -> Result<Option<i32>> {
         let url = match &metadata.repository {
             Some(url) => url,
@@ -80,16 +91,10 @@ impl RepositoryStatsUpdater {
                 return Ok(None);
             }
         };
-        let updaters = Self::get_updaters(&config);
-
-        Self::load_repository_inner(conn, url, &updaters)
+        self.load_repository_inner(conn, url)
     }
 
-    fn load_repository_inner(
-        conn: &mut Client,
-        url: &str,
-        updaters: &[Box<dyn RepositoryForge>],
-    ) -> Result<Option<i32>> {
+    fn load_repository_inner(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
         let name = match repository_name(url) {
             Some(name) => name,
             None => return Ok(None),
@@ -102,7 +107,7 @@ impl RepositoryStatsUpdater {
         )? {
             return Ok(Some(row.get("id")));
         }
-        for updater in updaters.iter().filter(|u| u.host() == name.host) {
+        for updater in self.updaters.iter().filter(|u| u.host() == name.host) {
             let res = match updater.fetch_repository(&name) {
                 Ok(Some(repo)) => Self::store_repository(conn, updater.host(), repo),
                 Err(err) => {
@@ -124,22 +129,19 @@ impl RepositoryStatsUpdater {
     }
 
     pub fn start_crons(config: Arc<Config>, pool: Pool) -> Result<()> {
+        let instance = Self::new(&config);
         cron(
             "repositories stats updater",
             Duration::from_secs(60 * 60),
-            move || {
-                Self::update_all_crates(&config, &pool)?;
-                Ok(())
-            },
+            move || instance.update_all_crates(&pool),
         )?;
 
         Ok(())
     }
 
-    pub fn update_all_crates(config: &Arc<Config>, pool: &Pool) -> Result<()> {
+    pub fn update_all_crates(&self, pool: &Pool) -> Result<()> {
         let mut conn = pool.get()?;
-        let updaters = Self::get_updaters(config);
-        for updater in updaters {
+        for updater in &self.updaters {
             info!("started updating `{}` repositories stats", updater.host());
 
             let needs_update = conn
@@ -174,11 +176,10 @@ impl RepositoryStatsUpdater {
         Ok(())
     }
 
-    pub fn backfill_repositories(ctx: &dyn Context) -> Result<()> {
+    pub fn backfill_repositories(&self, ctx: &dyn Context) -> Result<()> {
         let pool = ctx.pool()?;
         let mut conn = pool.get()?;
-        let updaters = Self::get_updaters(&ctx.config()?);
-        for updater in updaters.iter() {
+        for updater in &self.updaters {
             info!(
                 "started backfilling `{}` repositories stats",
                 updater.host()
@@ -201,9 +202,7 @@ impl RepositoryStatsUpdater {
 
                 if missing_urls.contains(&url) {
                     debug!("{} {} points to a known missing repo", name, version);
-                } else if let Some(node_id) =
-                    Self::load_repository_inner(&mut conn, &url, &updaters)?
-                {
+                } else if let Some(node_id) = self.load_repository_inner(&mut conn, &url)? {
                     conn.execute(
                         "UPDATE releases SET repository_id = $1 WHERE id = $2;",
                         &[&node_id, &id],
@@ -227,6 +226,15 @@ impl RepositoryStatsUpdater {
         }
 
         Ok(())
+    }
+
+    pub fn get_icon_name(&self, host: &str) -> &'static str {
+        for updater in &self.updaters {
+            if updater.host() == host {
+                return updater.icon();
+            }
+        }
+        ""
     }
 
     fn store_repository(conn: &mut Client, host: &str, repo: Repository) -> Result<i32> {
@@ -300,20 +308,6 @@ pub struct RepositoryName<'a> {
     pub host: &'a str,
 }
 
-pub fn get_icon_name(host: &str) -> &'static str {
-    // macro_rules! return_if_true {
-    //     ($t:ty, $icon:expr) => {
-    //         if <$t>::hosts().iter().any(|&h| h == host) {
-    //             return $icon;
-    //         }
-    //     };
-    // }
-
-    // return_if_true!(GitHub, "github");
-    // return_if_true!(GitLab, "gitlab");
-    ""
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -347,8 +341,6 @@ mod test {
         assert_name!("https://gitlab.freedesktop.org/test/test" => (
             "test", "test", "gitlab.freedesktop.org"
         ));
-        assert_name!("https://www.github.com/onur/cratesfyi" => None);
-        assert_name!("https://github.com/onur/cratesfyi" => None);
 
         // github checks
         assert_name!("https://github.com/onur/cratesfyi" => ("onur", "cratesfyi", "github.com"));
@@ -358,8 +350,5 @@ mod test {
         assert_name!("https://github.com/onur23cmD_M_R_L_/crates_fy-i" => (
             "onur23cmD_M_R_L_", "crates_fy-i", "github.com"
         ));
-        assert_name!("https://www.github.com/onur/cratesfyi" => None);
-        assert_name!("http://www.github.com/onur/cratesfyi" => None);
-        assert_name!("http://www.gitlab.com/onur/cratesfyi" => None);
     }
 }

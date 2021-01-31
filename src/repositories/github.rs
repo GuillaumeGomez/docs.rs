@@ -7,7 +7,6 @@ use reqwest::{
     header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT},
 };
 use serde::Deserialize;
-use std::sync::Arc;
 
 use crate::repositories::{
     FetchRepositoriesResult, Repository, RepositoryForge, RepositoryName, APP_USER_AGENT,
@@ -50,7 +49,7 @@ pub struct GitHub {
 impl GitHub {
     /// Returns `Err` if the access token has invalid syntax (but *not* if it isn't authorized).
     /// Returns `Ok(None)` if there is no access token.
-    pub fn new(config: &Arc<Config>) -> Result<Option<Self>> {
+    pub fn new(config: &Config) -> Result<Option<Self>> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
@@ -79,7 +78,7 @@ impl RepositoryForge for GitHub {
         "github.com"
     }
 
-    fn icon(&self) -> &str {
+    fn icon(&self) -> &'static str {
         "github"
     }
 

@@ -71,7 +71,7 @@ impl RepositoryForge for GitLab {
         self.host
     }
 
-    fn icon(&self) -> &str {
+    fn icon(&self) -> &'static str {
         "gitlab"
     }
 

@@ -2,7 +2,7 @@ pub use self::github::GitHub;
 pub use self::gitlab::GitLab;
 pub(crate) use self::updater::RepositoryName;
 pub use self::updater::{
-    get_icon_name, FetchRepositoriesResult, Repository, RepositoryForge, RepositoryStatsUpdater,
+    FetchRepositoriesResult, Repository, RepositoryForge, RepositoryStatsUpdater,
 };
 
 pub const APP_USER_AGENT: &str = concat!(
