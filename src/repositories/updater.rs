@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::repositories::{GithubUpdater, GitlabUpdater};
+use crate::repositories::{GitHub, GitLab};
 use crate::utils::{daemon::cron, MetadataPackage};
 use crate::{db::Pool, Config, Context};
 use chrono::{DateTime, Utc};
@@ -168,8 +168,8 @@ impl RepositoryStatsUpdater {
             };
         }
 
-        return_if_ok_some!(GithubUpdater);
-        return_if_ok_some!(GitlabUpdater);
+        return_if_ok_some!(GitHub);
+        return_if_ok_some!(GitLab);
         Ok(None)
     }
 
@@ -225,8 +225,8 @@ impl RepositoryStatsUpdater {
             };
         }
 
-        start_cron!(GithubUpdater);
-        start_cron!(GitlabUpdater);
+        start_cron!(GitHub);
+        start_cron!(GitLab);
         Ok(())
     }
 
@@ -239,8 +239,8 @@ impl RepositoryStatsUpdater {
             Ok(())
         }
 
-        inner::<GithubUpdater>(ctx)?;
-        inner::<GitlabUpdater>(ctx)?;
+        inner::<GitHub>(ctx)?;
+        inner::<GitLab>(ctx)?;
         Ok(())
     }
 
@@ -253,8 +253,8 @@ impl RepositoryStatsUpdater {
             Ok(())
         }
 
-        inner::<GithubUpdater>(ctx)?;
-        inner::<GitlabUpdater>(ctx)?;
+        inner::<GitHub>(ctx)?;
+        inner::<GitLab>(ctx)?;
         Ok(())
     }
 }
@@ -275,7 +275,7 @@ pub fn get_icon_name(host: &str) -> &'static str {
         };
     }
 
-    return_if_true!(GithubUpdater, "github");
-    return_if_true!(GitlabUpdater, "gitlab");
+    return_if_true!(GitHub, "github");
+    return_if_true!(GitLab, "gitlab");
     ""
 }

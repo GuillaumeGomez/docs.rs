@@ -42,12 +42,12 @@ const GRAPHQL_SINGLE: &str = "query($fullPath: ID!) {
 /// How many repositories to update in a single chunk.
 const UPDATE_CHUNK_SIZE: usize = 5;
 
-pub struct GitlabUpdater {
+pub struct GitLab {
     client: HttpClient,
     pool: Pool,
 }
 
-impl Updater for GitlabUpdater {
+impl Updater for GitLab {
     /// Returns `Err` if the access token has invalid syntax (but *not* if it isn't authorized).
     /// Returns `Ok(None)` if there is no access token.
     fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>> {
@@ -66,7 +66,7 @@ impl Updater for GitlabUpdater {
 
         let client = HttpClient::builder().default_headers(headers).build()?;
 
-        Ok(Some(GitlabUpdater { client, pool }))
+        Ok(Some(GitLab { client, pool }))
     }
 
     fn load_repository(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
@@ -165,7 +165,7 @@ impl Updater for GitlabUpdater {
     }
 }
 
-impl GitlabUpdater {
+impl GitLab {
     fn update_repositories(
         &self,
         host: &str,
@@ -300,7 +300,7 @@ mod test {
         macro_rules! assert_name {
             ($url:expr => ($owner:expr, $repo:expr, $host:expr)) => {
                 assert_eq!(
-                    GitlabUpdater::repository_name($url),
+                    GitLab::repository_name($url),
                     Some(RepositoryName {
                         owner: $owner,
                         repo: $repo,
@@ -309,7 +309,7 @@ mod test {
                 );
             };
             ($url:expr => None) => {
-                assert_eq!(GitlabUpdater::repository_name($url), None);
+                assert_eq!(GitLab::repository_name($url), None);
             };
         }
 

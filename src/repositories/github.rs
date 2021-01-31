@@ -45,13 +45,13 @@ const GRAPHQL_SINGLE: &str = "query($owner: String!, $repo: String!) {
 /// rejected by the GraphQL API.
 const UPDATE_CHUNK_SIZE: usize = 100;
 
-pub struct GithubUpdater {
+pub struct GitHub {
     client: HttpClient,
     pool: Pool,
     config: Arc<Config>,
 }
 
-impl Updater for GithubUpdater {
+impl Updater for GitHub {
     /// Returns `Err` if the access token has invalid syntax (but *not* if it isn't authorized).
     /// Returns `Ok(None)` if there is no access token.
     fn new(config: Arc<Config>, pool: Pool) -> Result<Option<Self>> {
@@ -71,7 +71,7 @@ impl Updater for GithubUpdater {
 
         let client = HttpClient::builder().default_headers(headers).build()?;
 
-        Ok(Some(GithubUpdater {
+        Ok(Some(GitHub {
             client,
             pool,
             config,
@@ -175,7 +175,7 @@ impl Updater for GithubUpdater {
     }
 }
 
-impl GithubUpdater {
+impl GitHub {
     fn update_repositories(&self, conn: &mut Client, node_ids: &[String]) -> Result<()> {
         let response: GraphResponse<GraphNodes<Option<GraphRepository>>> = self.graphql(
             GRAPHQL_UPDATE,
@@ -316,7 +316,7 @@ mod test {
         macro_rules! assert_name {
             ($url:expr => ($owner:expr, $repo:expr, $host:expr)) => {
                 assert_eq!(
-                    GithubUpdater::repository_name($url),
+                    GitHub::repository_name($url),
                     Some(RepositoryName {
                         owner: $owner,
                         repo: $repo,
@@ -325,7 +325,7 @@ mod test {
                 );
             };
             ($url:expr => None) => {
-                assert_eq!(GithubUpdater::repository_name($url), None);
+                assert_eq!(GitHub::repository_name($url), None);
             };
         }
 
