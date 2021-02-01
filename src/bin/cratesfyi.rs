@@ -423,15 +423,11 @@ impl DatabaseSubcommand {
             }
 
             Self::UpdateRepositoryFields => {
-                let config = ctx.config()?;
-                let updater = RepositoryStatsUpdater::new(&config);
-                updater.update_all_crates(&ctx.pool()?)?;
+                ctx.repository_stats_updater()?.update_all_crates()?;
             }
 
             Self::BackfillRepositoryStats => {
-                let config = ctx.config()?;
-                let updater = RepositoryStatsUpdater::new(&config);
-                updater.backfill_repositories(&ctx)?;
+                ctx.repository_stats_updater()?.backfill_repositories()?;
             }
 
             Self::UpdateCrateRegistryFields { name } => {
@@ -626,7 +622,8 @@ impl Context for BinContext {
             .repository_stats_updater
             .get_or_try_init::<_, Error>(|| {
                 let config = self.config()?;
-                Ok(Arc::new(RepositoryStatsUpdater::new(&config)))
+                let pool = self.pool()?;
+                Ok(Arc::new(RepositoryStatsUpdater::new(&config, pool)))
             })?
             .clone())
     }

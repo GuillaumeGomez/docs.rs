@@ -418,7 +418,7 @@ impl RustwideBuilder {
                 };
 
                 let cargo_metadata = res.cargo_metadata.root();
-                let repository = self.get_repo(&mut conn, cargo_metadata)?;
+                let repository = self.get_repo(cargo_metadata)?;
 
                 let release_id = add_package_into_database(
                     &mut conn,
@@ -700,9 +700,8 @@ impl RustwideBuilder {
         }
     }
 
-    fn get_repo(&self, conn: &mut Client, metadata: &MetadataPackage) -> Result<Option<i32>> {
-        self.repository_stats_updater
-            .load_repository(conn, metadata)
+    fn get_repo(&self, metadata: &MetadataPackage) -> Result<Option<i32>> {
+        self.repository_stats_updater.load_repository(metadata)
     }
 }
 

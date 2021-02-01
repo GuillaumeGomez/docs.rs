@@ -44,7 +44,7 @@ pub struct GitLab {
 }
 
 impl GitLab {
-    pub fn new(host: &'static str, access_token: &Option<String>) -> Result<Option<Self>> {
+    pub fn new(host: &'static str, access_token: &Option<String>) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(APP_USER_AGENT));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
@@ -62,7 +62,7 @@ impl GitLab {
         }
 
         let client = HttpClient::builder().default_headers(headers).build()?;
-        Ok(Some(GitLab { client, host }))
+        Ok(GitLab { client, host })
     }
 }
 

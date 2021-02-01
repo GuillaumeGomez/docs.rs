@@ -2,11 +2,7 @@
 //!
 //! This daemon will start web server, track new packages and build them
 
-use crate::{
-    repositories::RepositoryStatsUpdater,
-    utils::queue_builder,
-    Context, DocBuilder, RustwideBuilder,
-};
+use crate::{utils::queue_builder, Context, DocBuilder, RustwideBuilder};
 use failure::Error;
 use log::{debug, error, info};
 use std::thread;
@@ -67,18 +63,24 @@ pub fn start_daemon(context: &dyn Context, enable_registry_watcher: bool) -> Res
     // build new crates every minute
     let pool = context.pool()?;
     let build_queue = context.build_queue()?;
-    let cloned_config = config.clone();
     let rustwide_builder = RustwideBuilder::init(context)?;
     thread::Builder::new()
         .name("build queue reader".to_string())
         .spawn(move || {
-            let doc_builder =
-                DocBuilder::new(cloned_config.clone(), pool.clone(), build_queue.clone());
+            let doc_builder = DocBuilder::new(config.clone(), pool.clone(), build_queue.clone());
             queue_builder(doc_builder, rustwide_builder, build_queue).unwrap();
         })
         .unwrap();
 
-    RepositoryStatsUpdater::start_crons(config, context.pool()?)?;
+    let updater = context.repository_stats_updater()?;
+    cron(
+        "repositories stats updater",
+        Duration::from_secs(60 * 60),
+        move || {
+            updater.update_all_crates()?;
+            Ok(())
+        },
+    )?;
 
     // Never returns; `server` blocks indefinitely when dropped
     // NOTE: if a failure occurred earlier in `start_daemon`, the server will _not_ be joined -

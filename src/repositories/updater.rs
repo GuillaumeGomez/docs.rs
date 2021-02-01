@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::repositories::{GitHub, GitLab};
-use crate::utils::{daemon::cron, MetadataPackage};
-use crate::{db::Pool, Config, Context};
+use crate::utils::MetadataPackage;
+use crate::{db::Pool, Config};
 use chrono::{DateTime, Utc};
 use log::{debug, info, trace, warn};
 use once_cell::sync::Lazy;
@@ -9,8 +9,6 @@ use postgres::Client;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::Arc;
-use std::time::Duration;
 
 pub trait RepositoryForge {
     /// Result used both as the `host` column in the DB and to match repository URLs during
@@ -52,6 +50,7 @@ pub struct FetchRepositoriesResult {
 
 pub struct RepositoryStatsUpdater {
     updaters: Vec<Box<dyn RepositoryForge + Send + Sync>>,
+    pool: Pool,
 }
 
 impl fmt::Debug for RepositoryStatsUpdater {
@@ -65,25 +64,21 @@ impl fmt::Debug for RepositoryStatsUpdater {
 }
 
 impl RepositoryStatsUpdater {
-    pub fn new(config: &Config) -> Self {
-        let mut updaters: Vec<Box<dyn RepositoryForge + Send + Sync>> = Vec::with_capacity(3);
+    pub fn new(config: &Config, pool: Pool) -> Self {
+        let mut updaters: Vec<Box<dyn RepositoryForge + Send + Sync>> = Vec::new();
         if let Ok(Some(updater)) = GitHub::new(&config) {
             updaters.push(Box::new(updater));
         }
-        if let Ok(Some(updater)) = GitLab::new("gitlab.com", &config.gitlab_accesstoken) {
+        if let Ok(updater) = GitLab::new("gitlab.com", &config.gitlab_accesstoken) {
             updaters.push(Box::new(updater));
         }
-        if let Ok(Some(updater)) = GitLab::new("gitlab.freedesktop.org", &None) {
+        if let Ok(updater) = GitLab::new("gitlab.freedesktop.org", &None) {
             updaters.push(Box::new(updater));
         }
-        Self { updaters }
+        Self { updaters, pool }
     }
 
-    pub(crate) fn load_repository(
-        &self,
-        conn: &mut Client,
-        metadata: &MetadataPackage,
-    ) -> Result<Option<i32>> {
+    pub(crate) fn load_repository(&self, metadata: &MetadataPackage) -> Result<Option<i32>> {
         let url = match &metadata.repository {
             Some(url) => url,
             None => {
@@ -91,7 +86,8 @@ impl RepositoryStatsUpdater {
                 return Ok(None);
             }
         };
-        self.load_repository_inner(conn, url)
+        let mut conn = self.pool.get()?;
+        self.load_repository_inner(&mut conn, url)
     }
 
     fn load_repository_inner(&self, conn: &mut Client, url: &str) -> Result<Option<i32>> {
@@ -109,7 +105,7 @@ impl RepositoryStatsUpdater {
         }
         for updater in self.updaters.iter().filter(|u| u.host() == name.host) {
             let res = match updater.fetch_repository(&name) {
-                Ok(Some(repo)) => Self::store_repository(conn, updater.host(), repo),
+                Ok(Some(repo)) => self.store_repository(conn, updater.host(), repo),
                 Err(err) => {
                     warn!("failed to collect `{}` stats: {}", updater.host(), err);
                     return Ok(None);
@@ -128,19 +124,8 @@ impl RepositoryStatsUpdater {
         Ok(None)
     }
 
-    pub fn start_crons(config: Arc<Config>, pool: Pool) -> Result<()> {
-        let instance = Self::new(&config);
-        cron(
-            "repositories stats updater",
-            Duration::from_secs(60 * 60),
-            move || instance.update_all_crates(&pool),
-        )?;
-
-        Ok(())
-    }
-
-    pub fn update_all_crates(&self, pool: &Pool) -> Result<()> {
-        let mut conn = pool.get()?;
+    pub fn update_all_crates(&self) -> Result<()> {
+        let mut conn = self.pool.get()?;
         for updater in &self.updaters {
             info!("started updating `{}` repositories stats", updater.host());
 
@@ -165,10 +150,10 @@ impl RepositoryStatsUpdater {
             for chunk in needs_update.chunks(updater.chunk_size()) {
                 let res = updater.fetch_repositories(chunk)?;
                 for node in res.missing {
-                    Self::delete_repository(&mut conn, &node, updater.host())?;
+                    self.delete_repository(&mut conn, &node, updater.host())?;
                 }
                 for (_, repo) in res.present {
-                    Self::store_repository(&mut conn, updater.host(), repo)?;
+                    self.store_repository(&mut conn, updater.host(), repo)?;
                 }
             }
             info!("finished updating `{}` repositories stats", updater.host());
@@ -176,9 +161,8 @@ impl RepositoryStatsUpdater {
         Ok(())
     }
 
-    pub fn backfill_repositories(&self, ctx: &dyn Context) -> Result<()> {
-        let pool = ctx.pool()?;
-        let mut conn = pool.get()?;
+    pub fn backfill_repositories(&self) -> Result<()> {
+        let mut conn = self.pool.get()?;
         for updater in &self.updaters {
             info!(
                 "started backfilling `{}` repositories stats",
@@ -234,10 +218,11 @@ impl RepositoryStatsUpdater {
                 return updater.icon();
             }
         }
-        ""
+        // The default icon in case it doesn't match any of the "known" ones.
+        "code-branch"
     }
 
-    fn store_repository(conn: &mut Client, host: &str, repo: Repository) -> Result<i32> {
+    fn store_repository(&self, conn: &mut Client, host: &str, repo: Repository) -> Result<i32> {
         trace!(
             "storing {} repository stats for {}",
             host,
@@ -271,7 +256,7 @@ impl RepositoryStatsUpdater {
         Ok(data.get(0))
     }
 
-    fn delete_repository(conn: &mut Client, host_id: &str, host: &str) -> Result<()> {
+    fn delete_repository(&self, conn: &mut Client, host_id: &str, host: &str) -> Result<()> {
         trace!(
             "removing repository stats for host ID `{}` and host `{}`",
             host_id,

@@ -211,7 +211,12 @@ impl TestEnvironment {
 
     pub(crate) fn repository_stats_updater(&self) -> Arc<RepositoryStatsUpdater> {
         self.repository_stats_updater
-            .get_or_init(|| Arc::new(RepositoryStatsUpdater::new(&self.config())))
+            .get_or_init(|| {
+                Arc::new(RepositoryStatsUpdater::new(
+                    &self.config(),
+                    self.pool().expect("failed to get the pool"),
+                ))
+            })
             .clone()
     }
 
@@ -271,7 +276,9 @@ impl TestDatabase {
         // A random schema name is generated and used for the current connection. This allows each
         // test to create a fresh instance of the database to run within.
         let schema = format!("docs_rs_test_schema_{}", rand::random::<u64>());
-        let repository_stats_updater = RepositoryStatsUpdater::new(&config);
+
+        let pool = Pool::new_with_schema(&config, metrics, &schema)?;
+        let repository_stats_updater = RepositoryStatsUpdater::new(config, pool.clone());
 
         let mut conn = Connection::connect(&config.database_url, postgres::NoTls)?;
         conn.batch_execute(&format!(
@@ -307,7 +314,7 @@ impl TestDatabase {
         conn.batch_execute(&query)?;
 
         Ok(TestDatabase {
-            pool: Pool::new_with_schema(config, metrics, &schema)?,
+            pool,
             schema,
             repository_stats_updater,
         })
