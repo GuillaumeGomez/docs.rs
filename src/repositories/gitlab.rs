@@ -16,7 +16,7 @@ const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
     projects(ids: $ids) {
         nodes {
             id
-            nameWithNamespace
+            fullPath
             lastActivityAt
             description
             starCount
@@ -29,7 +29,7 @@ const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
 const GRAPHQL_SINGLE: &str = "query($fullPath: ID!) {
     project(fullPath: $fullPath) {
         id
-        nameWithNamespace
+        fullPath
         lastActivityAt
         description
         starCount
@@ -91,7 +91,7 @@ impl RepositoryForge for GitLab {
         if let Some(repo) = response.data.and_then(|d| d.project) {
             Ok(Some(Repository {
                 id: repo.id,
-                name_with_owner: repo.name_with_namespace,
+                name_with_owner: repo.full_path,
                 description: repo.description,
                 last_activity_at: repo.last_activity_at,
                 stars: repo.star_count,
@@ -123,7 +123,7 @@ impl RepositoryForge for GitLab {
                 if let Some(node) = node {
                     let repo = Repository {
                         id: node.id,
-                        name_with_owner: node.name_with_namespace,
+                        name_with_owner: node.full_path,
                         description: node.description,
                         last_activity_at: node.last_activity_at,
                         stars: node.star_count,
@@ -213,7 +213,7 @@ struct GraphProjectNode {
 #[serde(rename_all = "camelCase")]
 struct GraphProject {
     id: String,
-    name_with_namespace: String,
+    full_path: String,
     last_activity_at: Option<DateTime<Utc>>,
     description: Option<String>,
     star_count: i64,
