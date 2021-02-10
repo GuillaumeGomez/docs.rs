@@ -11,6 +11,10 @@ pub const APP_USER_AGENT: &str = concat!(
     include_str!(concat!(env!("OUT_DIR"), "/git_version"))
 );
 
+#[derive(Debug, failure::Fail)]
+#[fail(display = "rate limit reached")]
+struct RateLimitReached;
+
 mod github;
 mod gitlab;
 mod updater;

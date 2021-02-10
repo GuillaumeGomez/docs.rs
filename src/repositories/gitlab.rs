@@ -7,9 +7,11 @@ use reqwest::{
 };
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::str::FromStr;
 
 use crate::repositories::{
-    FetchRepositoriesResult, Repository, RepositoryForge, RepositoryName, APP_USER_AGENT,
+    FetchRepositoriesResult, RateLimitReached, Repository, RepositoryForge, RepositoryName,
+    APP_USER_AGENT,
 };
 
 const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
@@ -76,18 +78,19 @@ impl RepositoryForge for GitLab {
     }
 
     fn chunk_size(&self) -> usize {
-        5
+        100
     }
 
     fn fetch_repository(&self, name: &RepositoryName) -> Result<Option<Repository>> {
         let project_path = format!("{}/{}", name.owner, name.repo);
         // Fetch the latest information from the Gitlab API.
-        let response: GraphResponse<GraphProjectNode> = self.graphql(
+        let response: (GraphResponse<GraphProjectNode>, Option<usize>) = self.graphql(
             GRAPHQL_SINGLE,
             serde_json::json!({
                 "fullPath": &project_path,
             }),
         )?;
+        let (response, rate_limit) = response;
         if let Some(repo) = response.data.and_then(|d| d.project) {
             Ok(Some(Repository {
                 id: repo.id,
@@ -98,18 +101,24 @@ impl RepositoryForge for GitLab {
                 forks: repo.forks_count,
                 issues: repo.open_issues_count.unwrap_or(0),
             }))
+        } else if rate_limit.map(|x| x < 1).unwrap_or(false) {
+            Err(RateLimitReached.into())
         } else {
             Ok(None)
         }
     }
 
     fn fetch_repositories(&self, ids: &[String]) -> Result<FetchRepositoriesResult> {
-        let response: GraphResponse<GraphProjects<Option<GraphProject>>> = self.graphql(
+        let response: (
+            GraphResponse<GraphProjects<Option<GraphProject>>>,
+            Option<usize>,
+        ) = self.graphql(
             GRAPHQL_UPDATE,
             serde_json::json!({
                 "ids": ids,
             }),
         )?;
+        let (response, rate_limit) = response;
         let mut ret = FetchRepositoriesResult::default();
         // When gitlab doesn't find an ID, it simply doesn't list it. So we need to actually check
         // which nodes remain at the end to delete their DB entry.
@@ -136,6 +145,10 @@ impl RepositoryForge for GitLab {
                 }
             }
 
+            if ret.present.is_empty() && rate_limit.map(|x| x < 1).unwrap_or(false) {
+                return Err(RateLimitReached.into());
+            }
+
             // Those nodes were not returned by gitlab, meaning they don't exist (anymore?).
             ret.missing = node_ids.into_iter().map(|s| s.to_owned()).collect();
 
@@ -151,8 +164,8 @@ impl GitLab {
         &self,
         query: &str,
         variables: impl serde::Serialize,
-    ) -> Result<GraphResponse<T>> {
-        Ok(self
+    ) -> Result<(GraphResponse<T>, Option<usize>)> {
+        let res = self
             .client
             .post(&format!("https://{}/api/graphql", self.host))
             .json(&serde_json::json!({
@@ -160,14 +173,19 @@ impl GitLab {
                 "variables": variables,
             }))
             .send()?
-            .error_for_status()?
-            .json()?)
+            .error_for_status()?;
+        // There are a few other header values that might interesting so keeping them here:
+        // * RateLimit-Observed: '1'
+        // * RateLimit-Remaining: '1999'
+        // * RateLimit-ResetTime: 'Wed, 10 Feb 2021 21:31:42 GMT'
+        // * RateLimit-Limit: '2000'
+        let rate_limit = res
+            .headers()
+            .get("RateLimit-Remaining")
+            .and_then(|x| usize::from_str(x.to_str().ok()?).ok());
+        Ok((res.json()?, rate_limit))
     }
 }
-
-#[derive(Debug, failure::Fail)]
-#[fail(display = "rate limit reached")]
-struct RateLimitReached;
 
 #[derive(Debug, Deserialize)]
 struct GraphProjects<T> {

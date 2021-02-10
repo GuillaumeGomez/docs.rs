@@ -9,7 +9,8 @@ use reqwest::{
 use serde::Deserialize;
 
 use crate::repositories::{
-    FetchRepositoriesResult, Repository, RepositoryForge, RepositoryName, APP_USER_AGENT,
+    FetchRepositoriesResult, RateLimitReached, Repository, RepositoryForge, RepositoryName,
+    APP_USER_AGENT,
 };
 
 const GRAPHQL_UPDATE: &str = "query($ids: [ID!]!) {
@@ -181,10 +182,6 @@ impl GitHub {
             .json()?)
     }
 }
-
-#[derive(Debug, failure::Fail)]
-#[fail(display = "rate limit reached")]
-struct RateLimitReached;
 
 #[derive(Debug, Deserialize)]
 struct GraphResponse<T> {
