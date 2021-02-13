@@ -32,6 +32,7 @@ pub trait RepositoryForge {
     fn fetch_repositories(&self, ids: &[String]) -> Result<FetchRepositoriesResult>;
 }
 
+#[derive(Debug)]
 pub struct Repository {
     pub id: String,
     pub name_with_owner: String,
@@ -42,7 +43,7 @@ pub struct Repository {
     pub issues: i64,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct FetchRepositoriesResult {
     pub present: HashMap<String, Repository>,
     pub missing: Vec<String>,
@@ -270,7 +271,7 @@ impl RepositoryStatsUpdater {
     }
 }
 
-fn repository_name(url: &str) -> Option<RepositoryName> {
+pub(crate) fn repository_name(url: &str) -> Option<RepositoryName> {
     static RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"https?://(?P<host>.+)/(?P<owner>[\w\._-]+)/(?P<repo>[\w\._-]+)").unwrap()
     });
@@ -296,6 +297,7 @@ pub struct RepositoryName<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::context::Context;
 
     #[test]
     fn test_repository_name() {
@@ -335,5 +337,27 @@ mod test {
         assert_name!("https://github.com/onur23cmD_M_R_L_/crates_fy-i" => (
             "onur23cmD_M_R_L_", "crates_fy-i", "github.com"
         ));
+    }
+
+    #[test]
+    fn test_icon_name() {
+        crate::test::wrapper(|env| {
+            let mut config = env.base_config();
+            config.github_accesstoken = Some("qsjdnfqdq".to_owned());
+            let updater = RepositoryStatsUpdater::new(&config, env.pool()?);
+
+            assert_eq!(updater.get_icon_name(""), "code-branch");
+            assert_eq!(updater.get_icon_name("random"), "code-branch");
+            assert_eq!(updater.get_icon_name("github"), "code-branch");
+            assert_eq!(updater.get_icon_name("github.com"), "github");
+            assert_eq!(updater.get_icon_name("gitlab"), "code-branch");
+            assert_eq!(updater.get_icon_name("gitlab.com"), "gitlab");
+            assert_eq!(updater.get_icon_name("gitlab.freedesktop.org"), "gitlab");
+            assert_eq!(
+                updater.get_icon_name("a.gitlab.freedesktop.org"),
+                "code-branch"
+            );
+            Ok(())
+        });
     }
 }

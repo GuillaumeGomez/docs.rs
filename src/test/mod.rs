@@ -137,7 +137,7 @@ impl TestEnvironment {
         }
     }
 
-    fn base_config(&self) -> Config {
+    pub(crate) fn base_config(&self) -> Config {
         let mut config = Config::from_env().expect("failed to get base config");
 
         // Use less connections for each test compared to production.

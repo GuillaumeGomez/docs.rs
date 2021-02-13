@@ -41,7 +41,7 @@ comrak = { version = "0.9.1", default-features = false }
 toml = "0.5"
 schemamama = "0.3"
 schemamama_postgres = "0.3"
-systemstat = "0.1.4"
+systemstat = "0.1.7"
 prometheus = { version = "0.10.0", default-features = false }
 rustwide = "0.11"
 mime_guess = "2"
@@ -57,6 +57,8 @@ font-awesome-as-a-crate = { path = "crates/font-awesome-as-a-crate" }
 dashmap = "3.11.10"
 string_cache = "0.8.0"
 postgres-types = { version = "0.1.3", features = ["derive"] }
+# temporary bugfix: https://github.com/bitvecto-rs/bitvec/issues/105#issuecomment-778570981
+funty = "=1.1.0"
 
 # Async
 tokio = { version = "0.2.22", features = ["rt-threaded"] }
@@ -97,7 +99,8 @@ procfs = "0.7"
 [dev-dependencies]
 criterion = "0.3"
 kuchiki = "0.8"
-rand = "0.7.3"
+rand = "0.8"
+mockito = "0.29"
 
 [build-dependencies]
 time = "0.1"

@@ -170,9 +170,16 @@ impl GitHub {
         query: &str,
         variables: impl serde::Serialize,
     ) -> Result<GraphResponse<T>> {
+        #[cfg(not(test))]
+        let host = "https://api.github.com/graphql";
+        #[cfg(test)]
+        let host = format!("{}/graphql", mockito::server_url());
+        #[cfg(test)]
+        let host = &host;
+
         Ok(self
             .client
-            .post("https://api.github.com/graphql")
+            .post(host)
             .json(&serde_json::json!({
                 "query": query,
                 "variables": variables,
@@ -238,4 +245,90 @@ struct GraphRepository {
 #[serde(rename_all = "camelCase")]
 struct GraphIssues {
     total_count: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitHub;
+    use crate::repositories::updater::{repository_name, RepositoryForge};
+    use mockito::mock;
+
+    #[test]
+    fn test_rate_limit() {
+        crate::test::wrapper(|env| {
+            let mut config = env.base_config();
+            config.github_accesstoken = Some("qsjdnfqdq".to_owned());
+            let updater = GitHub::new(&config).expect("GitHub::new failed").unwrap();
+
+            let _m1 = mock("POST", "/graphql")
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"data": {"nodes": [], "rateLimit": {"remaining": 0}}}"#)
+                .create();
+
+            match updater.fetch_repositories(&[String::new()]) {
+                Err(e) if format!("{:?}", e).contains("RateLimitReached") => {}
+                x => panic!("Expected Err(RateLimitReached), found: {:?}", x),
+            }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn not_found() {
+        crate::test::wrapper(|env| {
+            let mut config = env.base_config();
+            config.github_accesstoken = Some("qsjdnfqdq".to_owned());
+            let updater = GitHub::new(&config).expect("GitHub::new failed").unwrap();
+
+            let _m1 = mock("POST", "/graphql")
+                .with_header("content-type", "application/json")
+                .with_body(
+                    r#"{"data": {"nodes": [], "rateLimit": {"remaining": 100000}}, "errors":
+                    [{"type": "NOT_FOUND", "path": ["nodes", 0], "message": "none"}]}"#,
+                )
+                .create();
+
+            match updater.fetch_repositories(&[String::new()]) {
+                Ok(res) => {
+                    assert_eq!(res.missing, vec![String::new()]);
+                    assert_eq!(res.present.len(), 0);
+                }
+                x => panic!("Failed: {:?}", x),
+            }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn get_repository_info() {
+        crate::test::wrapper(|env| {
+            let mut config = env.base_config();
+            config.github_accesstoken = Some("qsjdnfqdq".to_owned());
+            let updater = GitHub::new(&config).expect("GitHub::new failed").unwrap();
+
+            let _m1 = mock("POST", "/graphql")
+                .with_header("content-type", "application/json")
+                .with_body(
+                    r#"{"data": {"repository": {"id": "hello", "nameWithOwner": "foo/bar",
+                    "description": "this is", "stargazerCount": 10, "forkCount": 11,
+                    "issues": {"totalCount": 12}}}}"#,
+                )
+                .create();
+
+            let repo = updater
+                .fetch_repository(
+                    &repository_name("https://gitlab.com/foo/bar").expect("repository_name failed"),
+                )
+                .expect("fetch_repository failed")
+                .unwrap();
+
+            assert_eq!(repo.id, "hello");
+            assert_eq!(repo.name_with_owner, "foo/bar");
+            assert_eq!(repo.description, Some("this is".to_owned()));
+            assert_eq!(repo.stars, 10);
+            assert_eq!(repo.forks, 11);
+            assert_eq!(repo.issues, 12);
+            Ok(())
+        });
+    }
 }
