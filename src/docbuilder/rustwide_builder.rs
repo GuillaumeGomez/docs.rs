@@ -237,6 +237,14 @@ impl RustwideBuilder {
                 for (&file, versioned) in files {
                     let segments = file.rsplitn(2, '.').collect::<Vec<_>>();
                     let file_name = if versioned {
+                        if segments[0] == "js"
+                            && ["crates", "search-index"].iter().any(|x| *x == segments[1])
+                        {
+                            // We don't want to copy the `search-index.js` and `crates.js` files
+                            // into another directory, otherwise the "empty-library" will appear
+                            // into the crates list.
+                            continue;
+                        }
                         format!("{}-{}.{}", segments[1], rustc_version, segments[0])
                     } else {
                         file.to_string()
